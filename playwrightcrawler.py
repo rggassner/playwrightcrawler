@@ -1,16 +1,36 @@
 #!venv/bin/python3
-from urllib.parse import urlsplit, unquote, urlparse
+from urllib.parse import urljoin, urlsplit, unquote, urlparse
 from config import *
 import re
+import os
 import asyncio
 from pathlib import PurePosixPath
 from playwright.async_api import async_playwright
 import chardet
+import json
 from collections import Counter
+from PIL import Image, UnidentifiedImageError
+from io import BytesIO
+import hashlib
+import numpy as np
+from pprint import pprint
+from fake_useragent import UserAgent
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+
+
+ua = UserAgent()
+
+
+if CATEGORIZE_NSFW:
+    import opennsfw2 as n2
+    model = n2.make_open_nsfw_model()
+
+
 
 # Global store for results
 results = {}
 content_type_functions = []
+url_functions = []
 
 soup_tag_blocklist = {"script", "style", "noscript", "iframe", "meta", "head", "title", "input"}
 
@@ -651,6 +671,249 @@ content_type_all_others_regex = [
     ]
 
 
+def function_for_url(regexp_list):
+    def get_url_function(f):
+        for regexp in regexp_list:
+            url_functions.append((re.compile(regexp, flags=re.I | re.U), f))
+        return f
+    return get_url_function
+
+
+@function_for_url(
+    [
+        r"^(\/|\.\.\/|\.\/)",
+        r"^[0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬´c�í¦a]+$",
+        r"^[0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬´c]*[\?\/][0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬:\"¶c´™*]+$",
+    ]
+)
+def relative_url(args):
+    out_url = urljoin(args['parent_url'], args['url'])
+    parent_host = urlsplit(args['parent_url']).hostname
+    return [{
+        "url": out_url,
+        "visited": False,
+        "source": "relative_url",
+        "parent_host": parent_host,
+        "host": urlsplit(out_url).hostname,
+    }]
+
+@function_for_url([r"^https*://", r"^ftp://"])
+def full_url(args):
+    parent_host = urlsplit(args['parent_url']).hostname
+    return [{
+        "url": args['url'],
+        "visited": False,
+        "source": "full_url",
+        "parent_host": parent_host,
+        "host": urlsplit(args['url']).hostname,
+    }]
+
+@function_for_url([r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|mailo:|mail to:|Email para:|email :|email:|E-mail: |mail-to:|maitlo:|mail.to:)"])
+def email_url(args):
+    address_search = re.search(
+        r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|mailo:|mail to:|Email para:|email :|email:|E-mail: |mail-to:|maitlo:|mail.to:)(.*)",
+        args['url'],
+        flags=re.I | re.U,
+    )
+    if address_search:
+        address = address_search.group(2)
+        if re.match(r"^([A-Za-z0-9]+[._-])*[A-Za-z0-9]+@[A-Za-z0-9-]+(\.[A-Za-z]{2,})+$", address):
+            parent_host = urlsplit(args['parent_url']).hostname
+            return [{
+                "url": args['parent_url']+'|'+address,
+                "emails": [address],
+                "visited": True,
+                "source": "email_url",
+                "parent_host": parent_host,
+                "host": parent_host,
+                "isopendir": False
+            }]
+    return []
+
+def get_words_from_soup(soup) -> list[str]:
+    text_parts = [
+        t for t in soup.find_all(string=True)
+        if t.parent.name not in soup_tag_blocklist
+    ]
+    combined_text = " ".join(text_parts)
+    return extract_top_words_from_text(combined_text)
+
+def sanitize_url(
+        url,
+        debug=True,
+        skip_log_tags=['FINAL_NORMALIZE',
+                       'STRIP_WHITESPACE',
+                       'NORMALIZE_PATH_SLASHES']):
+    if skip_log_tags is None:
+        skip_log_tags = set()
+
+    def log_change(reason, before, after):
+        if before != after and reason not in skip_log_tags and debug:
+            print(f"\033[91m[{reason}] URL sanitized \
+                  from -{before}- to -{after}-\033[00m")
+
+    def clean_hostname_with_userinfo(netloc, scheme):
+        """
+        Cleans netloc, preserving valid username:password@host:port
+        patterns. Removes invalid characters, strips default ports, and
+        validates port range.
+        """
+        userinfo = ''
+        host_port = netloc
+
+        if '@' in netloc:
+            userinfo, host_port = netloc.split('@', 1)
+            # Clean userinfo (basic, do not over-sanitize)
+            userinfo = ''.join(c for c in userinfo if c.isprintable())
+
+        if ':' in host_port:
+            host, port = host_port.rsplit(':', 1)
+            host = ''.join(c for c in host if c.isalnum() or c in '-.')
+            if port.isdigit():
+                port_num = int(port)
+                if (scheme == 'http' and port == '80') or \
+                        (scheme == 'https' and port == '443'):
+                    port = ''
+                elif 1 <= port_num <= 65535:
+                    pass  # valid
+                else:
+                    port = ''
+            else:
+                port = ''
+        else:
+            host = ''.join(c for c in host_port if c.isalnum() or c in '-.')
+            port = ''
+
+        result = host
+        if port:
+            result += f':{port}'
+        if userinfo:
+            result = f'{userinfo}@{result}'
+        return result
+
+    def safe_normalize_path_slashes(path):
+        # Split on any embedded full http(s) URL and keep them intact
+        segments = re.split(r'(/https?://)', path)
+        result = []
+        for i in range(0, len(segments), 2):
+            part = segments[i]
+            part = re.sub(r'/{2,}', '/', part)
+            result.append(part)
+            if i + 1 < len(segments):
+                # re-append the "/https://" or "/http://"
+                result.append(segments[i + 1])
+        return ''.join(result)
+
+    pre_sanitize = url
+    if not url or not isinstance(url, str):
+        return ""
+
+    url = url.strip()
+    log_change("STRIP_WHITESPACE", pre_sanitize, url)
+    pre_sanitize = url
+    special_quote_pairs = [
+        (r'^"(.*)"$', r'\1'),
+        (r"^'(.*)'$", r'\1'),
+        (r'^\u201C(.*)\u201D$', r'\1'),
+        (r'^\u2018(.*)\u2019$', r'\1'),
+        (r'^"(.*)″$', r'\1'),
+    ]
+    for pattern, replacement in special_quote_pairs:
+        cleaned = re.sub(pattern, replacement, url)
+        log_change("SPECIAL_QUOTE_CLEAN", url, cleaned)
+        url = cleaned
+
+    scheme_fixes = [
+        (r'^ps://', 'https://'), (r'^ttps://', 'https://'),
+        (r'^htpps://', 'https://'), (r'^httpp://', 'https://'),
+        (r'^http:s//', 'https://'), (r'^hthttps://', 'https://'),
+        (r'^httsp://', 'https://'), (r'^htts://', 'https://'),
+        (r'^htttps://', 'https://'), (r'^https:https://', 'https://'),
+        (r'^https https://', 'https://'), (r'^httpshttps://', 'https://'),
+        (r'^https://https://', 'https://'), (r'^"https://', 'https://'),
+        (r'^httpd://', 'https://'), (r'^htps://', 'https://'),
+        (r'^https: //', 'https://'), (r'^https : //', 'https://'),
+        (r'^http2://', 'https://'), (r'^https%3A//', 'https://'),
+        (r'^%20https://', 'https://'), (r'^htto://', 'http://'),
+        (r'^htt://', 'http://'), (r'^htp://http//', 'http://'),
+        (r'^htp://', 'http://'), (r'^hhttp://', 'http://'),
+        (r'^http:/http://', 'http://'), (r'^http:www', 'http://www'),
+        (r'^htttp://', 'http://'), (r'^ttp://', 'http://'),
+        (r'^%20http://', 'http://'), (r'^%22mailto:', 'mailto:'),
+        (r'^httpqs://', 'https://www.'), (r'^://', 'https://')
+    ]
+    for pattern, replacement in scheme_fixes:
+        fixed = re.sub(pattern, replacement, url)
+        log_change("FIX_SCHEME", url, fixed)
+        url = fixed
+
+    cleaned = re.sub(r'^[a-zA-Z."(´]https://', 'https://', url)
+    log_change("PREFIX_CLEAN_HTTPS", url, cleaned)
+    url = cleaned
+    cleaned = re.sub(r'^[a-zA-Z."(´]http://', 'http://', url)
+    log_change("PREFIX_CLEAN_HTTP", url, cleaned)
+    url = cleaned
+
+    url = re.sub(r'^(https?:)/+', r'\1//', url)
+    log_change("FIX_SCHEME_SLASHES", pre_sanitize, url)
+    try:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        netloc = clean_hostname_with_userinfo(parsed.netloc, scheme)
+
+        if not netloc and parsed.path.startswith('/') and scheme:
+            parts = parsed.path.lstrip('/').split('/', 1)
+            if parts and '.' in parts[0]:
+                netloc = clean_hostname_with_userinfo(parts[0], scheme)
+                path = '/' + (parts[1] if len(parts) > 1 else '')
+                rebuilt = urlunsplit(
+                        (scheme,
+                         netloc,
+                         path,
+                         parsed.query,
+                         parsed.fragment))
+                log_change("FIX_NETLOC_IN_PATH", url, rebuilt)
+                url = rebuilt
+        else:
+            path = re.sub(r'/{2,}', '/', parsed.path)
+            rebuilt = urlunsplit(
+                    (scheme,
+                     netloc,
+                     path,
+                     parsed.query,
+                     parsed.fragment))
+            log_change("NORMALIZE_PATH_SLASHES", url, rebuilt)
+            url = rebuilt
+    except Exception:
+        fallback = re.sub(r'(https?://[^/]+)/{2,}', r'\1/', url)
+        log_change("FALLBACK_SLASH_FIX", url, fallback)
+        url = fallback
+
+    try:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        netloc = parsed.netloc.lower()
+
+        if ':' in netloc:
+            host, port = netloc.split(':', 1)
+            if (
+                    (scheme == 'http' and port == '80') or
+                    (scheme == 'https' and port == '443')
+               ):
+                netloc = host
+
+        path = safe_normalize_path_slashes(parsed.path)
+        normalized = urlunsplit((scheme, netloc, path, parsed.query, ''))
+        log_change("FINAL_NORMALIZE", url, normalized)
+        return normalized.strip()
+    except Exception:
+        return url.strip()
+
+def create_directories():
+    dirs = ["images", "images/sfw", "images/nsfw"]
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
+
 def function_for_content_type(regexp_list):
     def get_content_type_function(f):
         for regexp in regexp_list:
@@ -658,29 +921,32 @@ def function_for_content_type(regexp_list):
         return f
     return get_content_type_function
 
-async def get_dom_links(page) -> set[str]:
-    links = set()
-    selectors = [
-        ("a[href]", "href"),
-        ("link[href]", "href"),
-        ("script[src]", "src"),
-        ("img[src]", "src")
-    ]
-    for sel, attr in selectors:
-        values = await page.eval_on_selector_all(sel, f"els => els.map(e => e.{attr})")
-        links.update(values)
-    return links
+#async def get_dom_links(page) -> set[str]:
+#    links = set()
+#    selectors = [
+#        ("a[href]", "href"),
+#        ("link[href]", "href"),
+#        ("script[src]", "src"),
+#        ("img[src]", "src")
+#    ]
+#    for sel, attr in selectors:
+#        values = await page.eval_on_selector_all(sel, f"els => els.map(e => e.{attr})")
+#        links.update(values)
+#    return links
 
-async def get_links(page, base_url: str) -> list[str]:
+async def get_links_page(page, base_url: str) -> list[str]:
     links = set()
-    hrefs = await page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
-    links.update(hrefs)
-    hrefs = await page.eval_on_selector_all("link[href]", "els => els.map(e => e.href)")
-    links.update(hrefs)
-    srcs = await page.eval_on_selector_all("script[src]", "els => els.map(e => e.src)")
-    links.update(srcs)
-    srcs = await page.eval_on_selector_all("img[src]", "els => els.map(e => e.src)")
-    links.update(srcs)
+    try:
+        hrefs = await page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
+        links.update(hrefs)
+        hrefs = await page.eval_on_selector_all("link[href]", "els => els.map(e => e.href)")
+        links.update(hrefs)
+        srcs = await page.eval_on_selector_all("script[src]", "els => els.map(e => e.src)")
+        links.update(srcs)
+        srcs = await page.eval_on_selector_all("img[src]", "els => els.map(e => e.src)")
+        links.update(srcs)
+    except Exception as e:
+        print(f"Error extracting links from {base_url}: {e}")
     return list(links)
 
 async def get_words_from_page(page) -> list[str]:
@@ -709,37 +975,51 @@ async def get_words_from_page(page) -> list[str]:
     combined_text = " ".join(text_parts)
     return extract_top_words_from_text(combined_text)
 
-
 @function_for_content_type(content_type_html_regex)
 async def content_type_download(args):
-    #try:
-        #content = args['content']
-        # Ensure content is decoded properly
-        #if isinstance(content, bytes):
-        #    content = content.decode('utf-8', errors='replace')
-        #soup = BeautifulSoup(content, "html.parser")
-    #except Exception as e:
-    #    print(e)
-    #    return False
-    response=args['response']
-    content_type=args['content_type']
-    body_bytes = await response.body()
-    encoding = "utf-8"
-    if "charset=" in content_type:
-        encoding = content_type.split("charset=")[-1].split(";")[0].strip()
-    if not encoding:
-        encoding = chardet.detect(body_bytes)["encoding"] or "utf-8"
-    content = body_bytes.decode(encoding, errors="replace")
-    return {"url":args['url'],
-            "content_type":args['content_type'],
-            "visited":True,
-            "parent_host":args['parent_host']}
+    try:
+        content = args['content']
+        soup = BeautifulSoup(content, "html.parser")
+    except Exception as e:
+        print(f"Soup parsing error for {args['url']}: {e}")
+        return False
+    words = ''
+    min_webcontent = ''
+    raw_webcontent = ''
+    if EXTRACT_WORDS:
+        words = get_words_from_soup(soup)
+    if EXTRACT_RAW_WEBCONTENT:
+        raw_webcontent = str(soup)[:MAX_WEBCONTENT_SIZE]
+    if EXTRACT_MIN_WEBCONTENT:
+        min_webcontent = get_min_webcontent(soup)[:MAX_WEBCONTENT_SIZE]
+    isopendir = is_open_directory(str(soup), args['url'])
+
+    return {
+        "url": args['url'],
+        "content_type": args['content_type'],
+        "isopendir": isopendir,
+        "visited": True,
+        "words": words,
+        "min_webcontent": min_webcontent,
+        "raw_webcontent": raw_webcontent,
+        "source": 'content_type_html_regex',
+        "parent_host": args['parent_host']
+    }
+
+
+def get_min_webcontent(soup):
+    text_parts = [
+        t for t in soup.find_all(string=True)
+        if t.parent.name not in soup_tag_blocklist
+    ]
+    combined_text = " ".join(text_parts)
+    return combined_text
 
 @function_for_content_type(content_type_plain_text_regex)
 async def content_type_plain_text(args):
     words = ''
     if EXTRACT_WORDS:
-        words = await get_words(args['content'])
+        words = get_words(args['content'])
     return{ "url":args['url'],
             "content_type":args['content_type'],
             "isopendir":False,
@@ -748,14 +1028,13 @@ async def content_type_plain_text(args):
             "source":'content_type_plain_text_regex',
             "parent_host":args['parent_host']}
 
-
-#@function_for_content_type(content_type_image_regex)
-def content_type_images(args):
+@function_for_content_type(content_type_image_regex)
+async def content_type_images(args):
     global model
     npixels = 0
     if CATEGORIZE_NSFW or DOWNLOAD_ALL_IMAGES:
         try:
-            img = Image.open(BytesIO(args['content']))
+            img = Image.open(BytesIO(args['raw_content']))
             width, height = img.size
             npixels = width * height
             nsfw_probability = 0
@@ -768,34 +1047,19 @@ def content_type_images(args):
             filename = hashlib.sha512(img.tobytes()).hexdigest() + ".png"
         except UnidentifiedImageError as e:
             # SVG using cairo in the future
-            db_insert_if_new_url(
-                    url=args['url'],
-                    content_type=args['content_type'],
-                    source='content_type_images',
-                    isopendir=False,
-                    visited=True,
-                    parent_host=args['parent_host'],
-                    resolution=npixels)
-            return False
+            return {"url":args['url'],
+                    "content_type":args['content_type'],
+                    "source":"content_type_images_unidentified_image_error",
+                    "isopendir":False,
+                    "visited":True,
+                    "words":"",
+                    "parent_host":args['parent_host'],
+                    "resolution":npixels}
         except Image.DecompressionBombError as e:
-            db_insert_if_new_url(
-                    url=args['url'],
-                    content_type=args['content_type'],
-                    source='content_type_images',
-                    isopendir=False,
-                    visited=True,
-                    parent_host=args['parent_host'],
-                    resolution=npixels)
+            print("###### Missing return")
             return False
         except OSError:
-            db_insert_if_new_url(
-                    url=args['url'],
-                    content_type=args['content_type'],
-                    source='content_type_images',
-                    isopendir=False,
-                    visited=True,
-                    parent_host=args['parent_host'],
-                    resolution=npixels)
+            print("###### Missing return")
             return False
         if DOWNLOAD_ALL_IMAGES:
             img.save(IMAGES_FOLDER+'/' + filename, "PNG")
@@ -804,15 +1068,6 @@ def content_type_images(args):
             inputs = np.expand_dims(image, axis=0)
             predictions = model.predict(inputs, verbose=0)
             sfw_probability, nsfw_probability = predictions[0]
-            db_insert_if_new_url(
-                    args['url'],
-                    content_type=args['content_type'],
-                    source='content_type_images',
-                    visited=True,
-                    parent_host=args['parent_host'],
-                    isnsfw=nsfw_probability,
-                    isopendir=False,
-                    resolution=npixels)
             if nsfw_probability > NSFW_MIN_PROBABILITY:
                 print('porn {} {}'.format(nsfw_probability, args['url']))
                 if DOWNLOAD_NSFW:
@@ -820,343 +1075,23 @@ def content_type_images(args):
             else:
                 if DOWNLOAD_SFW:
                     img.save(SFW_FOLDER + '/' + filename, "PNG")
-    db_insert_if_new_url(
-            url=args['url'],
-            content_type=args['content_type'],
-            source='content_type_images',
-            isopendir=False,
-            visited=True,
-            parent_host=args['parent_host'],
-            resolution=npixels)
-    return True
-
-
-@function_for_content_type(content_type_midi_regex)
-def content_type_midis(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_midis',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_MIDIS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(MIDIS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_audio_regex)
-def content_type_audios(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_audios',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_AUDIOS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(AUDIOS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_video_regex)
-def content_type_videos(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_videos',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_VIDEOS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(VIDEOS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_pdf_regex)
-def content_type_pdfs(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_pdfs',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_PDFS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(PDFS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_doc_regex)
-def content_type_docs(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_docs',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_DOCS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(DOCS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_database_regex)
-def content_type_databases(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_databases',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_DATABASES:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(DATABASES_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_font_regex)
-def content_type_fonts(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_fonts',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_FONTS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(FONTS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_torrent_regex)
-def content_type_torrents(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_torrents',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_TORRENTS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(TORRENTS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-@function_for_content_type(content_type_compressed_regex)
-def content_type_compresseds(args):
-    db_insert_if_new_url(
-        url=args['url'],
-        content_type=args['content_type'],
-        isopendir=False,
-        visited=True,
-        source='content_type_compresseds',
-        parent_host=args['parent_host'])
-    if not DOWNLOAD_COMPRESSEDS:
-        return True
-    url = args['url']
-    base_filename = os.path.basename(urlparse(url).path)
-    try:
-        decoded_name = unquote(base_filename)
-    except Exception:
-        decoded_name = base_filename
-    # Separate extension (e.g., ".pdf")
-    name_part, ext = os.path.splitext(decoded_name)
-    # Sanitize both parts
-    name_part = re.sub(r"[^\w\-.]", "_", name_part)
-    ext = re.sub(r"[^\w\-.]", "_", ext)
-    # Create URL hash prefix (always fixed length)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    # Max length for entire filename (255) minus hash + dash + extension + safety margin
-    max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-    if len(name_part) > max_name_length:
-        name_part = name_part[:max_name_length - 3] + "..."
-    safe_filename = f"{url_hash}-{name_part}{ext}"
-    filepath = os.path.join(COMPRESSEDS_FOLDER, safe_filename)
-    with open(filepath, "wb") as f:
-        f.write(args['content'])
-    return True
-
-
-#@function_for_content_type(content_type_all_others_regex)
-def content_type_ignore(args):
-    db_insert_if_new_url(
-            url=args['url'],
-            visited=True,
-            isopendir=False,
-            content_type=args['content_type'],
-            source='content_type_all_others_regex',
-            parent_host=args['parent_host'])
-    return True
-
+            return {"url":args['url'],
+                    "content_type":args['content_type'],
+                    "source":"content_type_images_nsfw_categorization",
+                    "isopendir":False,
+                    "visited":True,
+                    "words":"",
+                    "parent_host":args['parent_host'],
+                    "isnsfw":float(nsfw_probability),
+                    "resolution":npixels}
+    return {"url":args['url'],
+            "content_type":args['content_type'],
+            "source":"content_type_images",
+            "isopendir":False,
+            "visited":True,
+            "words":"",
+            "parent_host":args['parent_host'],
+            "resolution":npixels}
 
 def get_directory_tree(url):
     host = '://'.join(urlsplit(url)[:2])
@@ -1196,7 +1131,7 @@ soup_tag_blocklist = {
     "script", "style", "noscript", "iframe", "meta", "head", "title", "input"
 }
 
-async def get_min_webcontent(page) -> str:
+async def get_min_webcontent_page(page) -> str:
     js = f"""
     () => {{
         const blocklist = new Set({list(soup_tag_blocklist)});
@@ -1303,15 +1238,51 @@ def extract_top_words_from_text(text: str) -> list[str]:
     most_common = Counter(words).most_common(WORDS_MAX_WORDS)
     return [word for word, _ in most_common]
 
+def get_links(soup, content_url):
+    tags = soup("a")
+    bulk_data = []
+    for tag in tags:
+        url = tag.get("href")
+        if not isinstance(url, str):
+            continue
+        url = sanitize_url(url)
+        host = urlsplit(url).hostname or urlsplit(content_url).hostname
+        if is_host_block_listed(host) or not is_host_allow_listed(host) or is_url_block_listed(url):
+            continue
+
+        # Collect URLs from all handlers
+        for regex, function in url_functions:
+            if regex.search(url):
+                results = function({'url': url, 'parent_url': content_url})
+                if results:
+                    bulk_data.extend(results)
+                break  # Only first matching handler
+
+    # Remove duplicates before insert
+    seen = set()
+    unique_bulk_data = []
+
+    for item in bulk_data:
+        url = item.get("url")
+        if not url:
+            continue  # skip items without a URL
+        if url not in seen:
+            unique_bulk_data.append(item)
+            seen.add(url)
+
+    return seen
+
 async def get_page_async(url: str, playwright):
     browser = await playwright.chromium.launch(headless=True)
-    context = await browser.new_context()
+    user_agent = ua.random
+    context = await browser.new_context(user_agent=user_agent)
     page = await context.new_page()
     parent_host = urlsplit(url)[1]
+
     # Local aggregation for this get_page call
     page_data = {
-        "urls": {},              # url -> content_type
-        "directories": set()     # unified directories set
+        "crawledcontent": [],  
+        "crawledlinks": set()
     }
 
     try:
@@ -1323,10 +1294,11 @@ async def get_page_async(url: str, playwright):
         print(f"Error fetching {url}: {e}")
         return
     html_text = await page.content()
-
-    links = await get_links(page, url)
+    links = await get_links_page(page, url)
     for link in links:
-        page_data["directories"].update(get_directory_tree(link))
+        page_data["crawledlinks"].update(get_directory_tree(link))
+
+
 
     words = ''
     min_webcontent = ''
@@ -1336,23 +1308,43 @@ async def get_page_async(url: str, playwright):
     if EXTRACT_RAW_WEBCONTENT:
         raw_webcontent = str(html_text)[:MAX_WEBCONTENT_SIZE]
     if EXTRACT_MIN_WEBCONTENT:
-        min_webcontent = await get_min_webcontent(page)
-    isopendir = is_open_directory(str(html_text), url)
+        min_webcontent = await get_min_webcontent_page(page)
+    isopendir = is_open_directory(str(html_text),url)
 
     async def handle_response(response):
         try:
+            if page.is_closed():
+                return  # avoid errors if page/browser is gone
+
             status = response.status
             rurl = response.url
             host = urlsplit(rurl)[1]
             content_type = response.headers.get("content-type")
 
+            body_bytes = None
+            content = ""
+            encoding = "utf-8"
+
+            if content_type and "charset=" in content_type:
+                encoding = content_type.split("charset=")[-1].split(";")[0].strip()
+
+            # Try to get body if it's not a redirect
+            if status < 300 or status >= 400:
+                try:
+                    body_bytes = await response.body()
+                    if body_bytes and content_type:
+                        if any(t in content_type for t in ["text", "json", "xml"]):
+                            if not encoding:
+                                encoding = chardet.detect(body_bytes)["encoding"] or "utf-8"
+                            content = body_bytes.decode(encoding, errors="replace")
+                except Exception as e:
+                    #print(f"Skipping body for {rurl} ({status}): {e}")
+                    pass
+
             if content_type:
                 content_type = sanitize_content_type(content_type)
 
-            # Save content-type per requested URL
-            page_data["urls"][rurl] = content_type
-
-            # Collect directories (only if it matches filters)
+            # Collect directories and run handlers
             if (
                 not is_host_block_listed(host)
                 and is_host_allow_listed(host)
@@ -1360,47 +1352,55 @@ async def get_page_async(url: str, playwright):
                 and content_type
             ):
                 if HUNT_OPEN_DIRECTORIES:
-                    page_data["directories"].update(get_directory_tree(rurl))
+                    page_data["crawledlinks"].update(get_directory_tree(rurl))
+
                 found = False
                 for regex, function in content_type_functions:
                     m = regex.search(content_type)
                     if m:
                         found = True
-                        await function({
-                            'url': url,
-                            'visited': True,
-                            'content_type': content_type,
-                            'source': 'get_page',
-                            'words': '',
-                            'response': response,
-                            'parent_host': parent_host}
-                        )
+                        try:
+                            urlresult = await function({
+                                'url': rurl,
+                                'content_type': content_type,
+                                'content': content,
+                                'raw_content': body_bytes,
+                                'source': 'get_page',
+                                'words': '',
+                                'response': response,
+                                'parent_host': parent_host
+                            })
+                            page_data["crawledcontent"].append(urlresult)
+                        except Exception as e:
+                            print(f"Handler failed for {rurl}: {e}")
                 if not found:
-                    print(f"UNKNOWN type -{url}- -{content_type}-")
+                    #print(f"UNKNOWN type -{rurl}- -{content_type}-")
+                    pass
+
         except Exception as e:
             print(f"Error handling response: {e}")
-            exit()
-    page.on("response", lambda response: asyncio.create_task(handle_response(response)))
+
+    # keep a reference so we can remove it
+    handler = lambda response: asyncio.create_task(handle_response(response))
+    page.on("response", handler)
+
     try:
         await page.goto(url, wait_until="domcontentloaded")
     except Exception as e:
         print(f"Error while fetching {url}: {e}")
     finally:
+        # make sure listener is removed before closing
+        page.remove_listener("response", handler)
         await browser.close()
+
     # Save aggregated result for this call
     results[url] = page_data
 
+
 async def get_page(url, playwright):
     await get_page_async(url, playwright)
-    # Print final structure
-    for base_url, data in results.items():
-        print({
-            "base_url": base_url,
-            "requested_urls": data["urls"],        # url -> content_type
-            "directories": list(data["directories"]),
-            "directories size": len(data["directories"]),
-            "requested_urls size":len(data["urls"])  # unified set
-        })
+    pprint(results)
+    results.clear()
 
 async def main():
     async with async_playwright() as playwright:
@@ -1408,4 +1408,22 @@ async def main():
         await get_page(url, playwright)
 
 if __name__ == "__main__":
+    create_directories()
     asyncio.run(main())
+
+
+#TODO
+#Deal with words extraction in html type
+#How will i dump the doc to elastic in bulk
+#Test an opendir site
+
+#Page scroller - Reddit like pages
+#Files that are base64 directly in page, like images
+#Get emails from a page
+
+#make a function to insert crawledcontent to elastic - parse variables, domain levels, directory levels and other content not related to browser, partial urls to opendir scanner.
+
+#make a function to insert crawledlinks to elastic. Enrich data used to select links, hostname, date
+
+#how are we going to deal with buckets
+
