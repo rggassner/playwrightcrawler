@@ -1,0 +1,15 @@
+sudo apt-get install libevent-2.1-7t64 libavif16
+python3 -m venv venv
+source venv/bin/activate
+
+pip install -r requirements.txt
+
+playwright
+chardet
+pillow
+opennsfw2
+tensorflow
+fake_useragent
+bs4
+
+playwright install
