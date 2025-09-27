@@ -1,4 +1,3 @@
-sudo apt-get install libevent-2.1-7t64 libavif16
 python3 -m venv venv
 source venv/bin/activate
 
