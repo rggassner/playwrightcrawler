@@ -32,8 +32,8 @@ EXTRACT_MIN_WEBCONTENT = True
 MAX_WEBCONTENT_SIZE = 900000
 
 # Used only in the first run
-# INITIAL_URL = 'https://crawler-test.com/'
-INITIAL_URL = 'https://www.sito.org/'
+INITIAL_URL = 'https://crawler-test.com/'
+
 
 # This will include all directories from tree
 # might sound aggressive for some websites
