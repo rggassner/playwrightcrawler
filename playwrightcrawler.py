@@ -17,17 +17,12 @@ from pprint import pprint
 from fake_useragent import UserAgent
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 
-
 ua = UserAgent()
-
 
 if CATEGORIZE_NSFW:
     import opennsfw2 as n2
     model = n2.make_open_nsfw_model()
 
-
-
-# Global store for results
 results = {}
 content_type_functions = []
 url_functions = []
@@ -921,19 +916,6 @@ def function_for_content_type(regexp_list):
         return f
     return get_content_type_function
 
-#async def get_dom_links(page) -> set[str]:
-#    links = set()
-#    selectors = [
-#        ("a[href]", "href"),
-#        ("link[href]", "href"),
-#        ("script[src]", "src"),
-#        ("img[src]", "src")
-#    ]
-#    for sel, attr in selectors:
-#        values = await page.eval_on_selector_all(sel, f"els => els.map(e => e.{attr})")
-#        links.update(values)
-#    return links
-
 async def get_links_page(page, base_url: str) -> list[str]:
     links = set()
     try:
@@ -948,6 +930,17 @@ async def get_links_page(page, base_url: str) -> list[str]:
     except Exception as e:
         print(f"Error extracting links from {base_url}: {e}")
     return list(links)
+
+def get_words(text: bytes | str) -> list[str]:
+    if not text:
+        return []
+    if isinstance(text, bytes):
+        try:
+            text = text.decode('utf-8', errors='replace')
+        except Exception:
+            return []
+    return extract_top_words_from_text(text)
+
 
 async def get_words_from_page(page) -> list[str]:
     # JS snippet that walks the DOM and collects text nodes
@@ -975,6 +968,34 @@ async def get_words_from_page(page) -> list[str]:
     combined_text = " ".join(text_parts)
     return extract_top_words_from_text(combined_text)
 
+@function_for_content_type(content_type_all_others_regex)
+async def content_type_ignore(args):
+    return { args['url'] : 
+            {
+        "url": args['url'],
+        "content_type": args['content_type'],
+        "visited": True,
+        "source": 'content_type_all_others_regex',
+        "parent_host": args['parent_host'] }
+            }
+
+@function_for_content_type(content_type_plain_text_regex)
+async def content_type_plain_text(args):
+    words = ''
+    if EXTRACT_WORDS:
+        words = get_words(args['content'])
+    return { args['url'] : 
+            {
+        "url": args['url'],
+        "content_type": args['content_type'],
+        "isopendir": False,
+        "visited": True,
+        "words": words,
+        "source": 'content_type_plain_text_regex',
+        "parent_host": args['parent_host'] }
+    }
+
+
 @function_for_content_type(content_type_html_regex)
 async def content_type_download(args):
     try:
@@ -992,20 +1013,20 @@ async def content_type_download(args):
         raw_webcontent = str(soup)[:MAX_WEBCONTENT_SIZE]
     if EXTRACT_MIN_WEBCONTENT:
         min_webcontent = get_min_webcontent(soup)[:MAX_WEBCONTENT_SIZE]
-    isopendir = is_open_directory(str(soup), args['url'])
-
-    return {
+    isopendir, pat  = is_open_directory(str(soup), args['url'])
+    return { args['url'] : 
+            {
         "url": args['url'],
         "content_type": args['content_type'],
         "isopendir": isopendir,
+        "opendir_pattern": pat,
         "visited": True,
         "words": words,
         "min_webcontent": min_webcontent,
         "raw_webcontent": raw_webcontent,
         "source": 'content_type_html_regex',
-        "parent_host": args['parent_host']
+        "parent_host": args['parent_host'] }
     }
-
 
 def get_min_webcontent(soup):
     text_parts = [
@@ -1014,19 +1035,6 @@ def get_min_webcontent(soup):
     ]
     combined_text = " ".join(text_parts)
     return combined_text
-
-@function_for_content_type(content_type_plain_text_regex)
-async def content_type_plain_text(args):
-    words = ''
-    if EXTRACT_WORDS:
-        words = get_words(args['content'])
-    return{ "url":args['url'],
-            "content_type":args['content_type'],
-            "isopendir":False,
-            "visited":True,
-            "words":words,
-            "source":'content_type_plain_text_regex',
-            "parent_host":args['parent_host']}
 
 @function_for_content_type(content_type_image_regex)
 async def content_type_images(args):
@@ -1047,14 +1055,17 @@ async def content_type_images(args):
             filename = hashlib.sha512(img.tobytes()).hexdigest() + ".png"
         except UnidentifiedImageError as e:
             # SVG using cairo in the future
-            return {"url":args['url'],
+            return {args['url']:
+                    {
+                    "url":args['url'],
                     "content_type":args['content_type'],
                     "source":"content_type_images_unidentified_image_error",
                     "isopendir":False,
                     "visited":True,
                     "words":"",
                     "parent_host":args['parent_host'],
-                    "resolution":npixels}
+                    "resolution":npixels }
+                    }
         except Image.DecompressionBombError as e:
             print("###### Missing return")
             return False
@@ -1075,23 +1086,29 @@ async def content_type_images(args):
             else:
                 if DOWNLOAD_SFW:
                     img.save(SFW_FOLDER + '/' + filename, "PNG")
-            return {"url":args['url'],
-                    "content_type":args['content_type'],
-                    "source":"content_type_images_nsfw_categorization",
-                    "isopendir":False,
-                    "visited":True,
-                    "words":"",
-                    "parent_host":args['parent_host'],
-                    "isnsfw":float(nsfw_probability),
-                    "resolution":npixels}
-    return {"url":args['url'],
-            "content_type":args['content_type'],
-            "source":"content_type_images",
-            "isopendir":False,
-            "visited":True,
-            "words":"",
-            "parent_host":args['parent_host'],
-            "resolution":npixels}
+            return  { args['url']:
+                    {   
+                        "url":args['url'],
+                        "content_type":args['content_type'],
+                        "source":"content_type_images_nsfw_categorization",
+                        "isopendir":False,
+                        "visited":True,
+                        "words":"",
+                        "parent_host":args['parent_host'],
+                        "isnsfw":float(nsfw_probability),
+                        "resolution":npixels }
+                    }
+    return { args['url']:
+            {
+                "url":args['url'],
+                "content_type":args['content_type'],
+                "source":"content_type_images",
+                "isopendir":False,
+                "visited":True,
+                "words":"",
+                "parent_host":args['parent_host'],
+                "resolution":npixels}
+            }
 
 def get_directory_tree(url):
     host = '://'.join(urlsplit(url)[:2])
@@ -1167,7 +1184,6 @@ def is_open_directory(content, content_url):
         r'<body[^>]*class="[^"]*dufs[^"]*"',                 # DUFS body
         r'<footer[^>]*>Generated by dufs',                   # DUFS footer
         r'<script[^>]*src="[^"]*dufs[^"]*"',                 # DUFS JS
-        # Caddy-style breadcrumb
         r'<div class="breadcrumbs">Folder Path</div>',
         r'<th><a href="\?C=N;O=D">Name</a></th><th><a href="\?C=M;O=A">Last modified</a></th><th><a href="\?C=S;O=A">Size</a></th><th><a href="\?C=D;O=A">Description</a></th>',
         r'<table class="sortable">\s*<thead>\s*<tr>\s*<th>Name\s*</th>\s*<th>Size\s*</th>\s*<th>Uploaded\s*</th>\s*<th>\s*</th>\s*</tr>',
@@ -1224,8 +1240,8 @@ def is_open_directory(content, content_url):
     for pat in patterns:
         if re.search(pat, content, re.IGNORECASE):
             print(f'### Is open directory - {content_url} - matched pattern: {pat}')
-            return True
-    return False
+            return True, pat
+    return False, ""
 
 def extract_top_words_from_text(text: str) -> list[str]:
     if WORDS_REMOVE_SPECIAL_CHARS:
@@ -1272,34 +1288,80 @@ def get_links(soup, content_url):
 
     return seen
 
+
+async def auto_scroll(page, max_attempts: int = 5, delay: float = 1.0):
+    """Scroll down until bottom or until max_attempts reached."""
+    last_height = await page.evaluate("document.body.scrollHeight")
+    attempts = 0
+
+    while attempts < max_attempts:
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(delay)
+        new_height = await page.evaluate("document.body.scrollHeight")
+
+        if new_height == last_height:
+            break
+        last_height = new_height
+        attempts += 1
+
+
+async def safe_content(page, retries: int = 5, delay: float = 1.0) -> str:
+    """Try to get page.content(), retrying if the page is busy."""
+    for i in range(retries):
+        try:
+            return await page.content()
+        except Exception as e:
+            print(f"page.content() failed (attempt {i+1}): {e}")
+            await asyncio.sleep(delay)
+    return ""
+
+
+def is_html_content(content_type: str) -> bool:
+    return any(
+        re.match(pattern, content_type, re.IGNORECASE)
+        for pattern in content_type_html_regex
+    )
+
+
+# --- main function ---
+
 async def get_page_async(url: str, playwright):
+    content_type = ""
     browser = await playwright.chromium.launch(headless=True)
     user_agent = ua.random
     context = await browser.new_context(user_agent=user_agent)
     page = await context.new_page()
+    page.set_default_timeout(60000)  # 60s
     parent_host = urlsplit(url)[1]
-
-    # Local aggregation for this get_page call
     page_data = {
-        "crawledcontent": [],  
+        "crawledcontent": {},
         "crawledlinks": set()
     }
-
     try:
         response = await page.goto(url, wait_until="domcontentloaded")
         if not response:
             print(f"Failed to load {url}")
             return
+        content_type = response.headers.get("content-type", "")
+        if content_type:
+            content_type = sanitize_content_type(content_type)
+
+        # 🚀 scroll only if it's HTML
+        if is_html_content(content_type):
+            await auto_scroll(page)
+            await page.wait_for_load_state("networkidle")
+
     except Exception as e:
         print(f"Error fetching {url}: {e}")
         return
-    html_text = await page.content()
+
+    # safe DOM snapshot
+    html_text = await safe_content(page)
+
     links = await get_links_page(page, url)
+    page_data["crawledlinks"].update(links)
     for link in links:
         page_data["crawledlinks"].update(get_directory_tree(link))
-
-
-
     words = ''
     min_webcontent = ''
     raw_webcontent = ''
@@ -1309,78 +1371,70 @@ async def get_page_async(url: str, playwright):
         raw_webcontent = str(html_text)[:MAX_WEBCONTENT_SIZE]
     if EXTRACT_MIN_WEBCONTENT:
         min_webcontent = await get_min_webcontent_page(page)
-    isopendir = is_open_directory(str(html_text),url)
+    isopendir, pat = is_open_directory(str(html_text), url)
 
     async def handle_response(response):
         try:
             if page.is_closed():
-                return  # avoid errors if page/browser is gone
+                return
 
             status = response.status
             rurl = response.url
             host = urlsplit(rurl)[1]
-            content_type = response.headers.get("content-type")
 
             body_bytes = None
             content = ""
             encoding = "utf-8"
 
-            if content_type and "charset=" in content_type:
-                encoding = content_type.split("charset=")[-1].split(";")[0].strip()
+            ctype = response.headers.get("content-type")
+            if ctype and "charset=" in ctype:
+                encoding = ctype.split("charset=")[-1].split(";")[0].strip()
 
-            # Try to get body if it's not a redirect
             if status < 300 or status >= 400:
                 try:
                     body_bytes = await response.body()
-                    if body_bytes and content_type:
-                        if any(t in content_type for t in ["text", "json", "xml"]):
+                    if body_bytes and ctype:
+                        if any(t in ctype for t in ["text", "json", "xml"]):
                             if not encoding:
                                 encoding = chardet.detect(body_bytes)["encoding"] or "utf-8"
                             content = body_bytes.decode(encoding, errors="replace")
                 except Exception as e:
-                    #print(f"Skipping body for {rurl} ({status}): {e}")
-                    pass
+                    print(f"Skipping body for {rurl} ({status}): {e}")
 
-            if content_type:
-                content_type = sanitize_content_type(content_type)
+            if ctype:
+                ctype = sanitize_content_type(ctype)
 
-            # Collect directories and run handlers
             if (
                 not is_host_block_listed(host)
                 and is_host_allow_listed(host)
                 and not is_url_block_listed(rurl)
-                and content_type
+                and ctype
             ):
                 if HUNT_OPEN_DIRECTORIES:
                     page_data["crawledlinks"].update(get_directory_tree(rurl))
 
                 found = False
                 for regex, function in content_type_functions:
-                    m = regex.search(content_type)
+                    m = regex.search(ctype)
                     if m:
                         found = True
                         try:
                             urlresult = await function({
                                 'url': rurl,
-                                'content_type': content_type,
                                 'content': content,
+                                'content_type': ctype,
                                 'raw_content': body_bytes,
-                                'source': 'get_page',
-                                'words': '',
-                                'response': response,
                                 'parent_host': parent_host
                             })
-                            page_data["crawledcontent"].append(urlresult)
+                            page_data["crawledcontent"].update(urlresult)
                         except Exception as e:
                             print(f"Handler failed for {rurl}: {e}")
                 if not found:
-                    #print(f"UNKNOWN type -{rurl}- -{content_type}-")
-                    pass
+                    print(f"UNKNOWN type -{rurl}- -{ctype}-")
 
         except Exception as e:
             print(f"Error handling response: {e}")
 
-    # keep a reference so we can remove it
     handler = lambda response: asyncio.create_task(handle_response(response))
     page.on("response", handler)
 
@@ -1389,12 +1443,26 @@ async def get_page_async(url: str, playwright):
     except Exception as e:
         print(f"Error while fetching {url}: {e}")
     finally:
-        # make sure listener is removed before closing
         page.remove_listener("response", handler)
         await browser.close()
 
-    # Save aggregated result for this call
-    results[url] = page_data
+    if is_html_content(content_type):
+        page_data["crawledcontent"].update({
+            url: {
+                "url": url,
+                "content_type": content_type,
+                "isopendir": isopendir,
+                "opendir_pattern": pat,
+                "visited": True,
+                "words": words,
+                "min_webcontent": min_webcontent,
+                "raw_webcontent": raw_webcontent,
+                "source": 'get_page_async',
+                "parent_host": parent_host
+            }
+        })
+
+    results.update(page_data)
 
 
 async def get_page(url, playwright):
@@ -1410,20 +1478,3 @@ async def main():
 if __name__ == "__main__":
     create_directories()
     asyncio.run(main())
-
-
-#TODO
-#Deal with words extraction in html type
-#How will i dump the doc to elastic in bulk
-#Test an opendir site
-
-#Page scroller - Reddit like pages
-#Files that are base64 directly in page, like images
-#Get emails from a page
-
-#make a function to insert crawledcontent to elastic - parse variables, domain levels, directory levels and other content not related to browser, partial urls to opendir scanner.
-
-#make a function to insert crawledlinks to elastic. Enrich data used to select links, hostname, date
-
-#how are we going to deal with buckets
-
