@@ -1,21 +1,43 @@
 #!venv/bin/python3
-from urllib.parse import urljoin, urlsplit, unquote, urlparse
+from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs
 from config import *
 import re
 import os
+import json
+import chardet
+import hashlib
 import asyncio
+import urllib3
+import hashlib
+import warnings
+import absl.logging
+import numpy as np
 from pathlib import PurePosixPath
 from playwright.async_api import async_playwright
-import chardet
-import json
 from collections import Counter
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
-import hashlib
-import numpy as np
 from pprint import pprint
 from fake_useragent import UserAgent
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+from datetime import datetime, timezone
+from elasticsearch import helpers, ConflictError
+from elasticsearch import NotFoundError, RequestError
+from elasticsearch import Elasticsearch
+from elasticsearch import exceptions as es_exceptions
+from elasticsearch.exceptions import NotFoundError, RequestError
+from urllib3.exceptions import InsecureRequestWarning
+from datetime import datetime, timezone
+
+
+absl.logging.set_verbosity('error')
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+warnings.filterwarnings(
+        "ignore",
+        category=Warning,
+        message=".*verify_certs=False is insecure.*")
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ua = UserAgent()
 
@@ -23,11 +45,247 @@ if CATEGORIZE_NSFW:
     import opennsfw2 as n2
     model = n2.make_open_nsfw_model()
 
-results = {}
-content_type_functions = []
-url_functions = []
-
 soup_tag_blocklist = {"script", "style", "noscript", "iframe", "meta", "head", "title", "input"}
+
+url_functions = []
+content_type_functions = []
+results = {"crawledcontent": {}, "crawledlinks": set()}
+
+
+def create_directories():
+    dirs = ["images", "images/sfw", "images/nsfw", "fonts", "videos"]
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
+
+
+def get_host_levels(hostname):
+    hostname = hostname.split(':')[0]  # Remove port if present
+    parts = hostname.split('.')
+    parts_reversed = list(parts)
+    return {
+        "host_levels": parts_reversed,
+        "host_level_map": {
+            f"host_level_{i+1}": level
+            for i, level in enumerate(parts_reversed)
+        }
+    }
+
+def get_directory_levels(url_path):
+    # Split the URL path into parts and remove empty strings
+    levels = [p for p in url_path.strip("/").split("/") if p]
+
+    # Ensure the levels list is padded to MAX_DIR_LEVELS
+    if len(levels) < MAX_DIR_LEVELS:
+        levels = levels + [''] * (MAX_DIR_LEVELS - len(levels))  # Add empty levels at the end
+
+    # Map the levels to their directory level numbers
+    directory_level_map = {f"directory_level_{i+1}": levels[i] for i in range(len(levels))}
+
+    return {
+        "directory_levels": levels,
+        "directory_level_map": directory_level_map
+    }
+        
+
+
+def preprocess_crawler_data(data: dict) -> dict:
+    """
+    Sample data
+
+    data = {
+        'crawledcontent': {
+            'https://imapsync.lamiral.info/examples/file.txt': {
+                'content_type': 'text/plain',
+                'isopendir': False,
+                'parent_host': 'imapsync.lamiral.info',
+                'source': 'content_type_plain_text_regex',
+                'url': 'https://imapsync.lamiral.info/examples/file.txt',
+                'visited': True,
+                'words': ['script', 'test1', 'exclude', 'toto', 'tata']
+            }
+        },
+        'crawledlinks': {
+            'https://imapsync.lamiral.info/',
+            'https://imapsync.lamiral.info/examples',
+            'https://imapsync.lamiral.info/examples/file.txt'
+        }
+    }
+    """
+def preprocess_crawler_data(data: dict) -> dict:
+    crawledcontent = data.get("crawledcontent", {})
+    crawledlinks = data.get("crawledlinks", set())
+
+    filtered_links = set()
+    new_crawledcontent = {}
+
+    for url in crawledlinks:
+        host = urlsplit(url).hostname
+        if host and not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
+            if url not in crawledcontent:
+                filtered_links.add(url)
+
+    for url, doc in crawledcontent.items():
+        host = urlsplit(url).hostname
+        if host and not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
+            new_doc = doc.copy()
+            insert_only_fields = {}
+
+            parsed = urlsplit(url)
+
+            # --- Emails ---
+            email = doc.get("emails") or doc.get("email")
+            if email and isinstance(email, str):
+                insert_only_fields["emails"] = [email]
+
+            # --- Query info ---
+            has_query = bool(parsed.query)
+            query_variables = []
+            query_values = []
+            if has_query:
+                parsed_qs = parse_qs(parsed.query)
+                query_variables = list(parsed_qs.keys())
+                query_values = [v for vals in parsed_qs.values() for v in vals]
+
+            insert_only_fields["has_query"] = has_query
+            if query_variables:
+                insert_only_fields["query_variables"] = query_variables
+            if query_values:
+                insert_only_fields["query_values"] = query_values
+
+            # --- Host levels ---
+            host_parts = get_host_levels(host).get("host_levels", [])
+            if len(host_parts) < MAX_HOST_LEVELS:
+                host_parts = [''] * (MAX_HOST_LEVELS - len(host_parts)) + host_parts
+            insert_only_fields["host_levels"] = host_parts
+            for i, part in enumerate(reversed(host_parts[-MAX_HOST_LEVELS:])):
+                insert_only_fields[f"host_level_{i+1}"] = part
+
+            # --- Directory levels ---
+            dir_parts = get_directory_levels(parsed.path).get("directory_levels", [])
+            if len(dir_parts) < MAX_DIR_LEVELS:
+                dir_parts = [''] * (MAX_DIR_LEVELS - len(dir_parts)) + dir_parts
+            insert_only_fields["directory_levels"] = dir_parts
+            for i, part in enumerate(dir_parts[:MAX_DIR_LEVELS]):
+                insert_only_fields[f"directory_level_{i+1}"] = part
+
+            # --- File extension ---
+            _, file_extension = os.path.splitext(unquote(parsed.path))
+            if file_extension:
+                insert_only_fields['file_extension'] = file_extension.lower().lstrip('.')
+
+            # Merge extra fields
+            new_doc.update(insert_only_fields)
+            new_crawledcontent[url] = new_doc
+
+    return {
+        "crawledcontent": new_crawledcontent,
+        "crawledlinks": filtered_links
+    }
+
+
+
+class DatabaseConnection:
+
+    def __init__(self):
+        es_config = {
+            "hosts": [f"https://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"],
+            "basic_auth": (ELASTICSEARCH_USER, ELASTICSEARCH_PASSWORD),
+            "verify_certs": ELASTICSEARCH_VERIFY_CERTS,
+            "request_timeout": ELASTICSEARCH_TIMEOUT,
+            "retry_on_timeout": ELASTICSEARCH_RETRY,
+            "max_retries": ELASTICSEARCH_RETRIES,
+            "http_compress": ELASTICSEARCH_HTTP_COMPRESS
+        }
+        if ELASTICSEARCH_CA_CERT_PATH:
+            es_config["ca_certs"] = ELASTICSEARCH_CA_CERT_PATH
+        self.es = Elasticsearch(**es_config)
+        self.con = self.es
+
+    def close(self):
+        self.es.close()
+
+    def commit(self):
+        pass
+
+    def search(self, *args, **kwargs):
+        return self.es.search(*args, **kwargs)
+
+    def scroll(self, *args, **kwargs):
+        return self.es.scroll(*args, **kwargs)
+
+
+    def _get_index_name(self, base: str) -> str:
+        """Return index name with year-month suffix (timezone-aware)."""
+        suffix = datetime.now(timezone.utc).strftime("%Y-%m")
+        return f"{base}-{suffix}"
+
+    def save_batch(self, data: dict):
+        """
+        Save crawled content + links into Elasticsearch using streaming_bulk.
+        Handles errors per-document instead of crashing.
+        """
+        if not self.con:
+            raise ValueError("db connection is required")
+
+        urls_index = self._get_index_name(LINKS_INDEX)
+        content_index = self._get_index_name(CONTENT_INDEX)
+
+        actions = []
+
+        # --- crawledcontent ---
+        for url, doc in data.get("crawledcontent", {}).items():
+            doc["created_at"] = datetime.now(timezone.utc)
+            doc["updated_at"] = datetime.now(timezone.utc)
+            actions.append({
+                "_op_type": "index",
+                "_index": content_index,
+                "_id": url_to_id(url),  # <-- hashed ID
+                "_source": doc
+            })
+
+        # --- crawledlinks ---
+        for link in data.get("crawledlinks", set()):
+            doc = {
+                "url": link,
+                "visited": False,
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc)
+            }
+            actions.append({
+                "_op_type": "index",
+                "_index": urls_index,
+                "_id": url_to_id(link),  # <-- hashed ID
+                "_source": doc
+            })
+
+        # --- Insert using streaming_bulk with per-item error logging ---
+        failed_count = 0
+        for ok, item in helpers.streaming_bulk(
+            self.es.options(request_timeout=240),
+            actions,
+            raise_on_error=False,
+            raise_on_exception=False
+        ):
+            if not ok:
+                failed_count += 1
+                print("[BULK FAILED] Document:", item)
+
+        print(f"[BULK] Inserted {len(actions) - failed_count} docs successfully, {failed_count} failed")
+
+def url_to_id(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+def get_index_name(base: str) -> str:
+    suffix = datetime.now(timezone.utc).strftime("%Y-%m")
+    return f"{base}-{suffix}"
+
+def db_create_monthly_indexes(db=None):
+    if db is None or db.es is None:  # <- changed from db.con
+        raise ValueError("db connection is required")
+    urls_index = get_index_name(LINKS_INDEX)
+    content_index = get_index_name(CONTENT_INDEX)
+
+    return urls_index, content_index
 
 content_type_html_regex = [
         r"^text/html$",
@@ -904,10 +1162,6 @@ def sanitize_url(
     except Exception:
         return url.strip()
 
-def create_directories():
-    dirs = ["images", "images/sfw", "images/nsfw"]
-    for d in dirs:
-        os.makedirs(d, exist_ok=True)
 
 def function_for_content_type(regexp_list):
     def get_content_type_function(f):
@@ -995,6 +1249,102 @@ async def content_type_plain_text(args):
         "parent_host": args['parent_host'] }
     }
 
+@function_for_content_type(content_type_font_regex)
+async def content_type_fonts(args):
+
+    if DOWNLOAD_FONTS:
+        raw_content = args.get('raw_content')
+        if not raw_content:
+            results["crawledlinks"].add(args['url'])
+            print(f"################# {args['url']}")
+            return {}
+
+        url = args['url']
+        base_filename = os.path.basename(urlparse(url).path)
+        try:
+            decoded_name = unquote(base_filename)
+        except Exception:
+            decoded_name = base_filename
+        # Separate extension (e.g., ".pdf")
+        name_part, ext = os.path.splitext(decoded_name)
+        # Sanitize both parts
+        name_part = re.sub(r"[^\w\-.]", "_", name_part)
+        ext = re.sub(r"[^\w\-.]", "_", ext)
+        # Create URL hash prefix (always fixed length)
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        # Max length for entire filename (255) minus hash + dash + extension + safety margin
+        max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
+        if len(name_part) > max_name_length:
+            name_part = name_part[:max_name_length - 3] + "..."
+        safe_filename = f"{url_hash}-{name_part}{ext}"
+        filepath = os.path.join(FONTS_FOLDER, safe_filename)
+        with open(filepath, "wb") as f:
+            f.write(args['raw_content'])
+        return  { args['url']:
+                {   
+                    "url":args['url'],
+                    "content_type":args['content_type'],
+                    "source":"content_type_fonts_download",
+                    "isopendir":False,
+                    "visited":True,
+                    "parent_host":args['parent_host'],
+                    "filename":safe_filename}
+                }
+    return  { args['url']:
+            {   
+                "url":args['url'],
+                "content_type":args['content_type'],
+                "source":"content_type_fonts",
+                "isopendir":False,
+                "visited":True,
+                "parent_host":args['parent_host']}
+            }
+
+
+@function_for_content_type(content_type_video_regex)
+async def content_type_videos(args):
+    if DOWNLOAD_VIDEOS:
+        url = args['url']
+        base_filename = os.path.basename(urlparse(url).path)
+        try:
+            decoded_name = unquote(base_filename)
+        except Exception:
+            decoded_name = base_filename
+        # Separate extension (e.g., ".pdf")
+        name_part, ext = os.path.splitext(decoded_name)
+        # Sanitize both parts
+        name_part = re.sub(r"[^\w\-.]", "_", name_part)
+        ext = re.sub(r"[^\w\-.]", "_", ext)
+        # Create URL hash prefix (always fixed length)
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        # Max length for entire filename (255) minus hash + dash + extension + safety margin
+        max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
+        if len(name_part) > max_name_length:
+            name_part = name_part[:max_name_length - 3] + "..."
+        safe_filename = f"{url_hash}-{name_part}{ext}"
+        filepath = os.path.join(VIDEOS_FOLDER, safe_filename)
+        with open(filepath, "wb") as f:
+            f.write(args['raw_content'])
+        return  { args['url']:
+                {   
+                    "url":args['url'],
+                    "content_type":args['content_type'],
+                    "source":"content_type_video_regex_download",
+                    "isopendir":False,
+                    "visited":True,
+                    "parent_host":args['parent_host'],
+                    "filename":safe_filename}
+                }
+    return  { args['url']:
+            {   
+                "url":args['url'],
+                "content_type":args['content_type'],
+                "source":"content_type_video_regex",
+                "isopendir":False,
+                "visited":True,
+                "parent_host":args['parent_host']}
+            }
+
 
 @function_for_content_type(content_type_html_regex)
 async def content_type_download(args):
@@ -1028,13 +1378,19 @@ async def content_type_download(args):
         "parent_host": args['parent_host'] }
     }
 
-def get_min_webcontent(soup):
+def get_min_webcontent(soup) -> str:
     text_parts = [
-        t for t in soup.find_all(string=True)
+        t.strip()  # remove leading/trailing whitespace including \n
+        for t in soup.find_all(string=True)
         if t.parent.name not in soup_tag_blocklist
     ]
+    # Filter out any empty strings after stripping
+    text_parts = [t for t in text_parts if t]
+
+    # Join with a single space
     combined_text = " ".join(text_parts)
     return combined_text
+
 
 @function_for_content_type(content_type_image_regex)
 async def content_type_images(args):
@@ -1053,61 +1409,77 @@ async def content_type_images(args):
                 # Convert to RGBA to handle transparency properly
                 img = img.convert("RGBA")
             filename = hashlib.sha512(img.tobytes()).hexdigest() + ".png"
+            if DOWNLOAD_ALL_IMAGES:
+                img.save(IMAGES_FOLDER+'/' + filename, "PNG")
+            if CATEGORIZE_NSFW and npixels > MIN_NSFW_RES:
+                image = n2.preprocess_image(img, n2.Preprocessing.YAHOO)
+                inputs = np.expand_dims(image, axis=0)
+                predictions = model.predict(inputs, verbose=0)
+                sfw_probability, nsfw_probability = predictions[0]
+                if nsfw_probability > NSFW_MIN_PROBABILITY:
+                    print('porn {} {}'.format(nsfw_probability, args['url']))
+                    if DOWNLOAD_NSFW:
+                        img.save(NSFW_FOLDER + '/' + filename, "PNG")
+                else:
+                    if DOWNLOAD_SFW:
+                        img.save(SFW_FOLDER + '/' + filename, "PNG")
+                return  { args['url']:
+                        {   
+                            "url":args['url'],
+                            "content_type":args['content_type'],
+                            "source":"content_type_images_nsfw_categorization",
+                            "isopendir":False,
+                            "visited":True,
+                            "parent_host":args['parent_host'],
+                            "isnsfw":float(nsfw_probability),
+                            "filename":filename,
+                            "resolution":npixels }
+                        }
+            else:
+                return  { args['url']:
+                        {   
+                            "url":args['url'],
+                            "content_type":args['content_type'],
+                            "source":"content_type_images_download",
+                            "isopendir":False,
+                            "visited":True,
+                            "parent_host":args['parent_host'],
+                            "filename":filename,
+                            "resolution":npixels }
+                        }
         except UnidentifiedImageError as e:
-            # SVG using cairo in the future
+            results["crawledlinks"].add(args['url'])
+        except Image.DecompressionBombError as e:
             return {args['url']:
                     {
                     "url":args['url'],
                     "content_type":args['content_type'],
-                    "source":"content_type_images_unidentified_image_error",
+                    "source":"content_type_images_decompression_bomb_error",
                     "isopendir":False,
                     "visited":True,
-                    "words":"",
                     "parent_host":args['parent_host'],
                     "resolution":npixels }
                     }
-        except Image.DecompressionBombError as e:
-            print("###### Missing return")
-            return False
         except OSError:
-            print("###### Missing return")
-            return False
-        if DOWNLOAD_ALL_IMAGES:
-            img.save(IMAGES_FOLDER+'/' + filename, "PNG")
-        if CATEGORIZE_NSFW and npixels > MIN_NSFW_RES:
-            image = n2.preprocess_image(img, n2.Preprocessing.YAHOO)
-            inputs = np.expand_dims(image, axis=0)
-            predictions = model.predict(inputs, verbose=0)
-            sfw_probability, nsfw_probability = predictions[0]
-            if nsfw_probability > NSFW_MIN_PROBABILITY:
-                print('porn {} {}'.format(nsfw_probability, args['url']))
-                if DOWNLOAD_NSFW:
-                    img.save(NSFW_FOLDER + '/' + filename, "PNG")
-            else:
-                if DOWNLOAD_SFW:
-                    img.save(SFW_FOLDER + '/' + filename, "PNG")
-            return  { args['url']:
-                    {   
-                        "url":args['url'],
-                        "content_type":args['content_type'],
-                        "source":"content_type_images_nsfw_categorization",
-                        "isopendir":False,
-                        "visited":True,
-                        "words":"",
-                        "parent_host":args['parent_host'],
-                        "isnsfw":float(nsfw_probability),
-                        "resolution":npixels }
+            return {args['url']:
+                    {
+                    "url":args['url'],
+                    "content_type":args['content_type'],
+                    "source":"content_type_images_oserror",
+                    "isopendir":False,
+                    "visited":True,
+                    "parent_host":args['parent_host'],
+                    "resolution":npixels }
                     }
+
     return { args['url']:
             {
                 "url":args['url'],
                 "content_type":args['content_type'],
-                "source":"content_type_images",
+                "source":"content_type_images_no_download",
                 "isopendir":False,
                 "visited":True,
-                "words":"",
-                "parent_host":args['parent_host'],
-                "resolution":npixels}
+                "parent_host":args['parent_host']}
             }
 
 def get_directory_tree(url):
@@ -1254,42 +1626,38 @@ def extract_top_words_from_text(text: str) -> list[str]:
     most_common = Counter(words).most_common(WORDS_MAX_WORDS)
     return [word for word, _ in most_common]
 
-def get_links(soup, content_url):
-    tags = soup("a")
-    bulk_data = []
-    for tag in tags:
-        url = tag.get("href")
-        if not isinstance(url, str):
-            continue
-        url = sanitize_url(url)
-        host = urlsplit(url).hostname or urlsplit(content_url).hostname
-        if is_host_block_listed(host) or not is_host_allow_listed(host) or is_url_block_listed(url):
-            continue
-
-        # Collect URLs from all handlers
-        for regex, function in url_functions:
-            if regex.search(url):
-                results = function({'url': url, 'parent_url': content_url})
-                if results:
-                    bulk_data.extend(results)
-                break  # Only first matching handler
-
-    # Remove duplicates before insert
-    seen = set()
-    unique_bulk_data = []
-
-    for item in bulk_data:
-        url = item.get("url")
-        if not url:
-            continue  # skip items without a URL
-        if url not in seen:
-            unique_bulk_data.append(item)
-            seen.add(url)
-
-    return seen
+#def get_links(soup, content_url):
+#    tags = soup("a")
+#    bulk_data = []
+#    for tag in tags:
+#        url = tag.get("href")
+#        if not isinstance(url, str):
+#            continue
+#        url = sanitize_url(url)
+#        # Collect URLs from all handlers
+#        for regex, function in url_functions:
+#            if regex.search(url):
+#                results = function({'url': url, 'parent_url': content_url})
+#                if results:
+#                    bulk_data.extend(results)
+#                break  # Only first matching handler
+#
+#    # Remove duplicates before insert
+#    seen = set()
+#    unique_bulk_data = []
+#
+#    for item in bulk_data:
+#        url = item.get("url")
+#        if not url:
+#            continue  # skip items without a URL
+#        if url not in seen:
+#            unique_bulk_data.append(item)
+#            seen.add(url)
+#
+#    return seen
 
 
-async def auto_scroll(page, max_attempts: int = 5, delay: float = 1.0):
+async def auto_scroll(page, max_attempts: int = SCROLL_ATTEMPTS, delay: float = SCROLL_DELAY):
     """Scroll down until bottom or until max_attempts reached."""
     last_height = await page.evaluate("document.body.scrollHeight")
     attempts = 0
@@ -1325,53 +1693,62 @@ def is_html_content(content_type: str) -> bool:
 
 # --- main function ---
 
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
 async def get_page_async(url: str, playwright):
-    content_type = ""
     browser = await playwright.chromium.launch(headless=True)
     user_agent = ua.random
     context = await browser.new_context(user_agent=user_agent)
     page = await context.new_page()
-    page.set_default_timeout(60000)  # 60s
+    page.set_default_timeout(PAGE_TIMEOUT_MS)
     parent_host = urlsplit(url)[1]
     page_data = {
         "crawledcontent": {},
         "crawledlinks": set()
     }
-    try:
-        response = await page.goto(url, wait_until="domcontentloaded")
-        if not response:
-            print(f"Failed to load {url}")
-            return
-        content_type = response.headers.get("content-type", "")
-        if content_type:
-            content_type = sanitize_content_type(content_type)
 
-        # 🚀 scroll only if it's HTML
-        if is_html_content(content_type):
-            await auto_scroll(page)
-            await page.wait_for_load_state("networkidle")
+    async def crawl(scroll: bool = False):
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded")
+            if not response:
+                print(f"Failed to load {url}")
+                return None
 
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
-        return
+            ctype = response.headers.get("content-type", "")
+            if ctype:
+                ctype = sanitize_content_type(ctype)
 
-    # safe DOM snapshot
+            if is_html_content(ctype) and scroll:
+                await auto_scroll(page)
+            if is_html_content(ctype):
+                await page.wait_for_load_state("networkidle")
+
+            return ctype
+        except PlaywrightTimeoutError:
+            print(f"Timeout fetching {url}, scroll={scroll}")
+            return None
+        except Exception as e:
+            print(f"Error fetching {url}: {e}")
+            return None
+
+    content_type = await crawl(scroll=False)
+    if content_type is None:
+        print(f"Retrying {url} with scrolling...")
+        content_type = await crawl(scroll=True)
+
+    content_type = content_type or ""
+
+    # Safe DOM snapshot and links
     html_text = await safe_content(page)
-
     links = await get_links_page(page, url)
     page_data["crawledlinks"].update(links)
-    for link in links:
-        page_data["crawledlinks"].update(get_directory_tree(link))
-    words = ''
-    min_webcontent = ''
-    raw_webcontent = ''
-    if EXTRACT_WORDS:
-        words = await get_words_from_page(page)
-    if EXTRACT_RAW_WEBCONTENT:
-        raw_webcontent = str(html_text)[:MAX_WEBCONTENT_SIZE]
-    if EXTRACT_MIN_WEBCONTENT:
-        min_webcontent = await get_min_webcontent_page(page)
+
+    # Extract words / raw / min content
+    words = await get_words_from_page(page) if EXTRACT_WORDS else ''
+    raw_webcontent = str(html_text)[:MAX_WEBCONTENT_SIZE] if EXTRACT_RAW_WEBCONTENT else ''
+    min_webcontent = await get_min_webcontent_page(page) if EXTRACT_MIN_WEBCONTENT else ''
     isopendir, pat = is_open_directory(str(html_text), url)
+
 
     async def handle_response(response):
         try:
@@ -1386,20 +1763,18 @@ async def get_page_async(url: str, playwright):
             content = ""
             encoding = "utf-8"
 
+            # Always grab content-type first
             ctype = response.headers.get("content-type")
-            if ctype and "charset=" in ctype:
-                encoding = ctype.split("charset=")[-1].split(";")[0].strip()
 
-            if status < 300 or status >= 400:
-                try:
-                    body_bytes = await response.body()
-                    if body_bytes and ctype:
-                        if any(t in ctype for t in ["text", "json", "xml"]):
-                            if not encoding:
-                                encoding = chardet.detect(body_bytes)["encoding"] or "utf-8"
-                            content = body_bytes.decode(encoding, errors="replace")
-                except Exception as e:
-                    print(f"Skipping body for {rurl} ({status}): {e}")
+            try:
+                body_bytes = await response.body()   # always grab raw bytes once
+            except Exception as e:
+                print(f"Could not fetch body for {rurl}: {e}")
+
+            # Decode only if textual content
+            if body_bytes and ctype and any(t in ctype for t in ["text", "json", "xml"]):
+                encoding = chardet.detect(body_bytes)["encoding"] or "utf-8"
+                content = body_bytes.decode(encoding, errors="replace")
 
             if ctype:
                 ctype = sanitize_content_type(ctype)
@@ -1410,13 +1785,9 @@ async def get_page_async(url: str, playwright):
                 and not is_url_block_listed(rurl)
                 and ctype
             ):
-                if HUNT_OPEN_DIRECTORIES:
-                    page_data["crawledlinks"].update(get_directory_tree(rurl))
-
                 found = False
                 for regex, function in content_type_functions:
-                    m = regex.search(ctype)
-                    if m:
+                    if regex.search(ctype):
                         found = True
                         try:
                             urlresult = await function({
@@ -1435,6 +1806,7 @@ async def get_page_async(url: str, playwright):
         except Exception as e:
             print(f"Error handling response: {e}")
 
+
     handler = lambda response: asyncio.create_task(handle_response(response))
     page.on("response", handler)
 
@@ -1445,7 +1817,6 @@ async def get_page_async(url: str, playwright):
     finally:
         page.remove_listener("response", handler)
         await browser.close()
-
     if is_html_content(content_type):
         page_data["crawledcontent"].update({
             url: {
@@ -1461,14 +1832,20 @@ async def get_page_async(url: str, playwright):
                 "parent_host": parent_host
             }
         })
+    results["crawledcontent"].update(page_data["crawledcontent"])
+    results["crawledlinks"].update(page_data["crawledlinks"])
+    await browser.close()
 
-    results.update(page_data)
 
 
 async def get_page(url, playwright):
+    db = DatabaseConnection()
     await get_page_async(url, playwright)
-    pprint(results)
+    presults=preprocess_crawler_data(results)
+    pprint(presults)
+    db.save_batch(presults)
     results.clear()
+
 
 async def main():
     async with async_playwright() as playwright:
@@ -1476,5 +1853,8 @@ async def main():
         await get_page(url, playwright)
 
 if __name__ == "__main__":
+    db = DatabaseConnection()
+    urls_index, content_index = db_create_monthly_indexes(db)
     create_directories()
     asyncio.run(main())
+
