@@ -1,4 +1,16 @@
 
+# This option only makes sense to be activated when you have an external
+# script packing data to database, since all crawler data is already
+# filtered while urls are entering.
+REMOVE_INVALID_URLS = True
+    
+# If urls that are blocked based on host should be removed from the database.
+REMOVE_BLOCKED_HOSTS = True
+    
+# If urls that are blocked based on path should be deleted from the database.
+REMOVE_BLOCKED_URLS = True
+
+
 # Word extraction
 EXTRACT_WORDS = True
 WORDS_REMOVE_SPECIAL_CHARS = True
@@ -18,10 +30,10 @@ DOWNLOAD_NSFW = False
 NSFW_FOLDER = 'images/nsfw'
 DOWNLOAD_SFW = False
 SFW_FOLDER = 'images/sfw'
-DOWNLOAD_ALL_IMAGES = True
+DOWNLOAD_ALL_IMAGES = False
 IMAGES_FOLDER = 'images'
 
-DOWNLOAD_FONTS = True
+DOWNLOAD_FONTS = False
 FONTS_FOLDER = 'fonts'
 
 DOWNLOAD_VIDEOS = True
@@ -54,7 +66,7 @@ HUNT_OPEN_DIRECTORIES = True
 # Do not crawl these domains.
 HOST_REGEX_BLOCK_LIST = [
     r'localhost:4443$',
-    r'(^|\.)spotify.com$',
+    r'(^|\.)spotify\.com$',
     r'(^|\.)google$',
 ]
 
@@ -116,6 +128,19 @@ ELASTICSEARCH_RANDOM_BUCKETS = 20
 # Name of the indexes where data will be stored
 CONTENT_INDEX = 'crawler-content'
 LINKS_INDEX = 'crawler-links'
+
+INPUT_DIR = 'input_url_files' 
+
+ITERATIONS = 10000
+RANDOM_SITES_QUEUE = 1000
+
+METHOD_WEIGHTS = {
+    "fewest_urls":  1,
+    "oldest":       1,
+    "host_prefix":  1,
+    "random":       100000
+}
+
 
 # Page timeout in ms
 PAGE_TIMEOUT_MS = 60000
