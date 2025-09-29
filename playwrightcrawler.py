@@ -4,16 +4,20 @@ from config import *
 import re
 import os
 import json
+import fcntl
+import random
 import chardet
 import hashlib
 import asyncio
 import urllib3
 import hashlib
 import warnings
+import argparse
 import absl.logging
 import numpy as np
 from pathlib import PurePosixPath
 from playwright.async_api import async_playwright
+from playwright.async_api import Error as PlaywrightError
 from collections import Counter
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
@@ -53,7 +57,7 @@ results = {"crawledcontent": {}, "crawledlinks": set()}
 
 
 def create_directories():
-    dirs = ["images", "images/sfw", "images/nsfw", "fonts", "videos"]
+    dirs = ["images", "images/sfw", "images/nsfw", "fonts", "videos", "input_url_files"]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
 
@@ -89,44 +93,25 @@ def get_directory_levels(url_path):
 
 
 def preprocess_crawler_data(data: dict) -> dict:
-    """
-    Sample data
-
-    data = {
-        'crawledcontent': {
-            'https://imapsync.lamiral.info/examples/file.txt': {
-                'content_type': 'text/plain',
-                'isopendir': False,
-                'parent_host': 'imapsync.lamiral.info',
-                'source': 'content_type_plain_text_regex',
-                'url': 'https://imapsync.lamiral.info/examples/file.txt',
-                'visited': True,
-                'words': ['script', 'test1', 'exclude', 'toto', 'tata']
-            }
-        },
-        'crawledlinks': {
-            'https://imapsync.lamiral.info/',
-            'https://imapsync.lamiral.info/examples',
-            'https://imapsync.lamiral.info/examples/file.txt'
-        }
-    }
-    """
-def preprocess_crawler_data(data: dict) -> dict:
     crawledcontent = data.get("crawledcontent", {})
     crawledlinks = data.get("crawledlinks", set())
 
-    filtered_links = set()
+    filtered_links = {}
     new_crawledcontent = {}
 
     for url in crawledlinks:
         host = urlsplit(url).hostname
-        if host and not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
+        if not host:
+            continue  # skip links without host
+        if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
             if url not in crawledcontent:
-                filtered_links.add(url)
+                filtered_links[url] = host  # store url -> host
 
     for url, doc in crawledcontent.items():
         host = urlsplit(url).hostname
-        if host and not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
+        if not host:
+            continue  # skip if content URL has no host
+        if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
             new_doc = doc.copy()
             insert_only_fields = {}
 
@@ -179,7 +164,7 @@ def preprocess_crawler_data(data: dict) -> dict:
 
     return {
         "crawledcontent": new_crawledcontent,
-        "crawledlinks": filtered_links
+        "crawledlinks": filtered_links  # now a dict url -> host
     }
 
 
@@ -222,7 +207,7 @@ class DatabaseConnection:
     def save_batch(self, data: dict):
         """
         Save crawled content + links into Elasticsearch using streaming_bulk.
-        Handles errors per-document instead of crashing.
+        Skips links without host.
         """
         if not self.con:
             raise ValueError("db connection is required")
@@ -239,14 +224,17 @@ class DatabaseConnection:
             actions.append({
                 "_op_type": "index",
                 "_index": content_index,
-                "_id": url_to_id(url),  # <-- hashed ID
+                "_id": url_to_id(url),
                 "_source": doc
             })
 
         # --- crawledlinks ---
-        for link in data.get("crawledlinks", set()):
+        for url, host in data.get("crawledlinks", {}).items():
+            if not host:
+                continue  # skip links with no host
             doc = {
-                "url": link,
+                "url": url,
+                "host": host,
                 "visited": False,
                 "created_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc)
@@ -254,7 +242,7 @@ class DatabaseConnection:
             actions.append({
                 "_op_type": "index",
                 "_index": urls_index,
-                "_id": url_to_id(link),  # <-- hashed ID
+                "_id": url_to_id(url),
                 "_source": doc
             })
 
@@ -271,6 +259,40 @@ class DatabaseConnection:
                 print("[BULK FAILED] Document:", item)
 
         print(f"[BULK] Inserted {len(actions) - failed_count} docs successfully, {failed_count} failed")
+
+
+def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
+    """
+    Return up to `size` random URLs, one URL per host, sampled uniformly.
+    Works well for huge indices using helpers.scan.
+    """
+    urls_index = f"{LINKS_INDEX}-*"
+    host_to_url = {}
+
+    # Scan the entire index, but keep only one URL per host
+    query = {"query": {"match_all": {}}}
+    for doc in helpers.scan(db.es, index=urls_index, query=query):
+        url = doc['_source'].get('url')
+        if not url:
+            continue
+        host = urlsplit(url).hostname
+        if not host:
+            continue
+
+        # Reservoir sampling: randomly keep one URL per host
+        if host not in host_to_url:
+            host_to_url[host] = url
+        else:
+            # Replace with a small probability to get uniform random selection per host
+            if random.random() < 0.5:
+                host_to_url[host] = url
+
+    all_urls = list(host_to_url.values())
+    if len(all_urls) > size:
+        all_urls = random.sample(all_urls, size)
+
+    return all_urls
+
 
 def url_to_id(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
@@ -1195,32 +1217,41 @@ def get_words(text: bytes | str) -> list[str]:
             return []
     return extract_top_words_from_text(text)
 
-
 async def get_words_from_page(page) -> list[str]:
-    # JS snippet that walks the DOM and collects text nodes
+    # JS snippet that safely walks the DOM and collects text nodes
     js = """
     () => {
-        const blocklist = new Set(["script", "style", "noscript", "iframe"]);
-        function getTextNodes(node) {
-            let texts = [];
-            if (node.nodeType === Node.TEXT_NODE) {
-                const text = node.textContent.trim();
-                if (text.length > 0) {
-                    texts.push(text);
+        try {
+            const body = document.body;
+            if (!body) return [];
+            const blocklist = new Set(["script", "style", "noscript", "iframe"]);
+            function getTextNodes(node) {
+                let texts = [];
+                if (node.nodeType === Node.TEXT_NODE) {
+                    const text = node.textContent.trim();
+                    if (text.length > 0) texts.push(text);
+                } else if (node.nodeType === Node.ELEMENT_NODE && !blocklist.has(node.tagName.toLowerCase())) {
+                    for (const child of node.childNodes) {
+                        texts = texts.concat(getTextNodes(child));
+                    }
                 }
-            } else if (node.nodeType === Node.ELEMENT_NODE && !blocklist.has(node.tagName.toLowerCase())) {
-                for (const child of node.childNodes) {
-                    texts = texts.concat(getTextNodes(child));
-                }
+                return texts;
             }
-            return texts;
+            return getTextNodes(body);
+        } catch (err) {
+            return [];
         }
-        return getTextNodes(document.body);
     }
     """
-    text_parts = await page.evaluate(js)
+    try:
+        text_parts = await page.evaluate(js)
+    except Exception as e:
+        print(f"[WARN] get_words_from_page failed: {e}")
+        text_parts = []
+
     combined_text = " ".join(text_parts)
     return extract_top_words_from_text(combined_text)
+
 
 @function_for_content_type(content_type_all_others_regex)
 async def content_type_ignore(args):
@@ -1251,54 +1282,94 @@ async def content_type_plain_text(args):
 
 @function_for_content_type(content_type_font_regex)
 async def content_type_fonts(args):
+    url = args.get("url")
+    content_type = args.get("content_type")
+    parent_host = args.get("parent_host")
+    raw_content = args.get("raw_content")
 
+    # --- Case: downloading fonts ---
     if DOWNLOAD_FONTS:
-        raw_content = args.get('raw_content')
-        if not raw_content:
-            results["crawledlinks"].add(args['url'])
-            print(f"################# {args['url']}")
-            return {}
-
-        url = args['url']
-        base_filename = os.path.basename(urlparse(url).path)
-        try:
-            decoded_name = unquote(base_filename)
-        except Exception:
-            decoded_name = base_filename
-        # Separate extension (e.g., ".pdf")
-        name_part, ext = os.path.splitext(decoded_name)
-        # Sanitize both parts
-        name_part = re.sub(r"[^\w\-.]", "_", name_part)
-        ext = re.sub(r"[^\w\-.]", "_", ext)
-        # Create URL hash prefix (always fixed length)
-        url_hash = hashlib.sha256(url.encode()).hexdigest()
-        # Max length for entire filename (255) minus hash + dash + extension + safety margin
-        max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-        if len(name_part) > max_name_length:
-            name_part = name_part[:max_name_length - 3] + "..."
-        safe_filename = f"{url_hash}-{name_part}{ext}"
-        filepath = os.path.join(FONTS_FOLDER, safe_filename)
-        with open(filepath, "wb") as f:
-            f.write(args['raw_content'])
-        return  { args['url']:
-                {   
-                    "url":args['url'],
-                    "content_type":args['content_type'],
-                    "source":"content_type_fonts_download",
-                    "isopendir":False,
-                    "visited":True,
-                    "parent_host":args['parent_host'],
-                    "filename":safe_filename}
+        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
+            # Skip saving if no valid content
+            results["crawledlinks"].add(url)
+            return {
+                url: {
+                    "url": url,
+                    "content_type": content_type,
+                    "source": "content_type_fonts_empty",
+                    "isopendir": False,
+                    "visited": True,
+                    "parent_host": parent_host,
                 }
-    return  { args['url']:
-            {   
-                "url":args['url'],
-                "content_type":args['content_type'],
-                "source":"content_type_fonts",
-                "isopendir":False,
-                "visited":True,
-                "parent_host":args['parent_host']}
             }
+
+        try:
+            # Decode filename
+            base_filename = os.path.basename(urlparse(url).path) or "font"
+            try:
+                decoded_name = unquote(base_filename)
+            except Exception:
+                decoded_name = base_filename
+
+            # Split extension
+            name_part, ext = os.path.splitext(decoded_name)
+
+            # Sanitize
+            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "font"
+            ext = re.sub(r"[^\w\-.]", "_", ext)
+
+            # Hash prefix
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
+            if len(name_part) > max_name_length:
+                name_part = name_part[: max_name_length - 3] + "..."
+
+            safe_filename = f"{url_hash}-{name_part}{ext}"
+            filepath = os.path.join(FONTS_FOLDER, safe_filename)
+
+            # Write safely (only if we really have bytes)
+            if raw_content and isinstance(raw_content, (bytes, bytearray)):
+                with open(filepath, "wb") as f:
+                    f.write(raw_content)
+
+                return {
+                    url: {
+                        "url": url,
+                        "content_type": content_type,
+                        "source": "content_type_fonts_download",
+                        "isopendir": False,
+                        "visited": True,
+                        "parent_host": parent_host,
+                        "filename": safe_filename,
+                    }
+                }
+            else:
+                raise ValueError("raw_content is not bytes")
+
+        except Exception as e:
+            print(f"[WARNING] Failed to save font {url}: {e}")
+            return {
+                url: {
+                    "url": url,
+                    "content_type": content_type,
+                    "source": "content_type_fonts_failed",
+                    "isopendir": False,
+                    "visited": True,
+                    "parent_host": parent_host,
+                }
+            }
+
+    # --- Case: not downloading fonts ---
+    return {
+        url: {
+            "url": url,
+            "content_type": content_type,
+            "source": "content_type_fonts",
+            "isopendir": False,
+            "visited": True,
+            "parent_host": parent_host,
+        }
+    }
 
 
 @function_for_content_type(content_type_video_regex)
@@ -1377,6 +1448,161 @@ async def content_type_download(args):
         "source": 'content_type_html_regex',
         "parent_host": args['parent_host'] }
     }
+
+def remove_blocked_hosts_from_es_db(db):
+    compiled_blocklist = [re.compile(pattern) for pattern in HOST_REGEX_BLOCK_LIST]
+    def is_blocked(host):
+        return any(regex.search(host) for regex in compiled_blocklist)
+    def delete_from_index(index_pattern: str, label: str) -> int:
+        print(f"Deleting blocked hosts from {label}")
+        deleted = 0
+        query = {"query": {"match_all": {}}}
+        for doc in helpers.scan(db.es, index=index_pattern, query=query):
+            url = doc["_source"].get("url")
+            if not url:
+                continue
+            host = urlsplit(url).hostname or ""
+            if is_blocked(host):
+                db.es.delete(index=doc["_index"], id=doc["_id"])
+                print(f"Deleted: {url} (from {doc['_index']})")
+                deleted += 1
+        return deleted
+    total_deleted = 0
+    total_deleted += delete_from_index(f"{LINKS_INDEX}-*", LINKS_INDEX)
+    total_deleted += delete_from_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)
+    print(f"\nDone. Total deleted: {total_deleted}")
+
+
+def remove_blocked_urls_from_es_db(db):
+    # Compile path-based regex block list
+    compiled_url_blocklist = [re.compile(pattern) for pattern in URL_REGEX_BLOCK_LIST]
+
+    def is_blocked_path(path: str) -> bool:
+        return any(regex.search(path) for regex in compiled_url_blocklist)
+
+    def process_index(index_pattern: str, label: str) -> int:
+        deleted = 0
+        query = {"query": {"match_all": {}}}
+
+        print(f"Deleting blocked URLs from {label}")
+
+        for doc in helpers.scan(db.es, index=index_pattern, query=query):
+            url = doc["_source"].get("url")
+            if not url:
+                continue
+            path = urlsplit(url).path or ""
+            if is_blocked_path(path):
+                db.es.delete(index=doc["_index"], id=doc["_id"])
+                print(f"Deleted by path: {url}")
+                deleted += 1
+
+        return deleted
+
+    total_deleted = 0
+    total_deleted += process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)   # <-- added ()
+    total_deleted += process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)  # <-- added ()
+
+    print(f"\nDone. Total deleted by path: {total_deleted}")
+
+def process_input_url_files(db):
+    if not os.path.isdir(INPUT_DIR):
+        return
+
+    while True:
+        files = [f for f in os.listdir(INPUT_DIR) if os.path.isfile(os.path.join(INPUT_DIR, f))]
+        if not files:
+            print("No more input files to process.")
+            break
+
+        file_to_process = os.path.join(INPUT_DIR, random.choice(files))
+        print(f"Processing input file: {file_to_process}")
+
+        try:
+            # Try normal UTF-8 read
+            with open(file_to_process, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+        except UnicodeDecodeError as e:
+            print(f"Unicode error in {file_to_process}: {e}")
+            print("Retrying with line-by-line decode (bad chars replaced).")
+
+            lines = []
+            with open(file_to_process, "rb") as f:  # binary read
+                for i, raw_line in enumerate(f, 1):
+                    try:
+                        line = raw_line.decode("utf-8")
+                    except UnicodeDecodeError as e:
+                        print(f"Problem in line {i}: {e} -> replacing bad chars")
+                        line = raw_line.decode("utf-8", errors="replace")
+                    lines.append(line)
+
+        if not lines:
+            print(f"File is empty, deleting: {file_to_process}")
+            os.remove(file_to_process)
+            continue
+
+        urls_to_process = lines[:MAX_URLS_FROM_FILE]
+        remaining = lines[MAX_URLS_FROM_FILE:]
+
+        driver = initialize_driver()
+        for url in urls_to_process:
+            url = url.strip()
+            if not url:
+                continue
+            try:
+                print('    [FILE] {}'.format(url))
+                del driver.requests
+                get_page(url, driver, db)
+            except Exception as e:
+                print(f"Error crawling {url}: {e}")
+        driver.quit()
+
+        # Rewrite file with remaining lines
+        if remaining:
+            with open(file_to_process, "w", encoding="utf-8") as f:
+                f.writelines(remaining)
+        else:
+            os.remove(file_to_process)
+            print(f"File fully processed and removed: {file_to_process}")
+
+
+def remove_invalid_urls(db):
+    def process_index(index_pattern: str, label: str) -> int:
+        deleted = 0
+        query = {"query": {"match_all": {}}}
+
+        print(f"Deleting invalid URLs from {label}")
+
+        for doc in helpers.scan(db.es, index=index_pattern, query=query):
+            url = doc["_source"].get("url")
+            if not url:
+                continue
+
+            parsed = urlparse(url)
+            pre_url = url
+            url = sanitize_url(url)
+
+            # Remove if URL changed after sanitization
+            if pre_url != url:
+                print(f"Deleted sanitized URL: -{pre_url}- inserting -{url}-")
+                results["crawledlinks"].add(url)
+                db.es.delete(index=doc["_index"], id=doc["_id"])
+                deleted += 1
+                continue
+
+            # Remove if completely missing a scheme (e.g., "www.example.com")
+            if not parsed.scheme:
+                print(f"Deleted URL with no scheme: -{url}-")
+                db.es.delete(index=doc["_index"], id=doc["_id"])
+                deleted += 1
+
+        return deleted
+
+    total_deleted = 0
+    total_deleted += process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)
+    total_deleted += process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)
+
+    print(f"\nDone. Total invalid URLs deleted: {total_deleted}")
 
 def get_min_webcontent(soup) -> str:
     text_parts = [
@@ -1521,27 +1747,39 @@ soup_tag_blocklist = {
 }
 
 async def get_min_webcontent_page(page) -> str:
+    # Make sure DOM is ready before extracting
+    await page.wait_for_load_state("domcontentloaded")
+
     js = f"""
     () => {{
         const blocklist = new Set({list(soup_tag_blocklist)});
         function getTextNodes(node) {{
+            if (!node) return [];  // ✅ Null check
             let texts = [];
             if (node.nodeType === Node.TEXT_NODE) {{
                 const text = node.textContent.trim();
                 if (text.length > 0) texts.push(text);
-            }} else if (node.nodeType === Node.ELEMENT_NODE && !blocklist.has(node.tagName.toLowerCase())) {{
-                for (const child of node.childNodes) {{
+            }} else if (node.nodeType === Node.ELEMENT_NODE && !blocklist.has(node.tagName?.toLowerCase?.())) {{
+                for (const child of node.childNodes || []) {{
                     texts = texts.concat(getTextNodes(child));
                 }}
             }}
             return texts;
         }}
-        return getTextNodes(document.body);
+        return getTextNodes(document.body) || [];  // ✅ Handles document.body being null
     }}
     """
-    text_parts = await page.evaluate(js)
+
+    try:
+        text_parts = await page.evaluate(js)
+    except Exception as e:
+        # ✅ Graceful fallback in case evaluate itself fails
+        print(f"[WARN] Failed extracting minimal webcontent: {e}")
+        return ""
+
     combined_text = " ".join(text_parts)
     return combined_text[:MAX_WEBCONTENT_SIZE]
+
 
 def is_open_directory(content, content_url):
     host = urlsplit(content_url)[1]
@@ -1626,35 +1864,22 @@ def extract_top_words_from_text(text: str) -> list[str]:
     most_common = Counter(words).most_common(WORDS_MAX_WORDS)
     return [word for word, _ in most_common]
 
-#def get_links(soup, content_url):
-#    tags = soup("a")
-#    bulk_data = []
-#    for tag in tags:
-#        url = tag.get("href")
-#        if not isinstance(url, str):
-#            continue
-#        url = sanitize_url(url)
-#        # Collect URLs from all handlers
-#        for regex, function in url_functions:
-#            if regex.search(url):
-#                results = function({'url': url, 'parent_url': content_url})
-#                if results:
-#                    bulk_data.extend(results)
-#                break  # Only first matching handler
-#
-#    # Remove duplicates before insert
-#    seen = set()
-#    unique_bulk_data = []
-#
-#    for item in bulk_data:
-#        url = item.get("url")
-#        if not url:
-#            continue  # skip items without a URL
-#        if url not in seen:
-#            unique_bulk_data.append(item)
-#            seen.add(url)
-#
-#    return seen
+def get_instance_number():
+    global lock_file
+    try:
+        os.makedirs("/tmp/instance_flags", exist_ok=True)
+        for i in range(1, 100):
+            lock_path = f"/tmp/instance_flags/instance_{i}.lock"
+            lock_file = open(lock_path, "w")  # keep open!
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return i
+            except BlockingIOError:
+                lock_file.close()
+                continue
+    except Exception as e:
+        print(f"Error determining instance number: {e}")
+    return 999
 
 
 async def auto_scroll(page, max_attempts: int = SCROLL_ATTEMPTS, delay: float = SCROLL_DELAY):
@@ -1679,9 +1904,60 @@ async def safe_content(page, retries: int = 5, delay: float = 1.0) -> str:
         try:
             return await page.content()
         except Exception as e:
-            print(f"page.content() failed (attempt {i+1}): {e}")
-            await asyncio.sleep(delay)
+            msg = str(e)
+            if "Unable to retrieve content because the page is navigating" in msg:
+                pass
+            else:
+                print(f"page.content() failed (attempt {i+1}): {e}")
+                await asyncio.sleep(delay)
     return ""
+
+def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
+    # Default weights if none provided
+    if METHOD_WEIGHTS is None:
+        method_weights = {
+            "fewest_urls":  1,
+            "oldest":       1,
+            "host_prefix":  1,
+            "random":       100
+        }
+    else:
+        method_weights = METHOD_WEIGHTS
+
+    # Filter out methods with zero weight
+    active_methods = {name: weight for name, weight in method_weights.items() if weight > 0}
+
+    # If no methods have weights > 0, return empty list
+    if not active_methods:
+        print("No active methods configured (all weights are 0)")
+        return []
+
+    # Normalize weights to sum to 1.0
+    total_weight = sum(active_methods.values())
+    normalized_weights = {name: weight/total_weight for name, weight in active_methods.items()}
+
+    # Set up method mapping
+    method_functions = {
+        "fewest_urls": lambda: get_least_covered_random_hosts(db, size=size),
+        "oldest": lambda: get_oldest_unvisited_urls_from_bucket(db, size=size),
+        "host_prefix": lambda: get_urls_by_random_bucket_and_host_prefix(db, size=size),
+        "random": lambda: get_random_host_domains(db, size=size)
+    }
+
+    try:
+        # Choose method based on normalized weights
+        methods = list(normalized_weights.keys())
+        weights = list(normalized_weights.values())
+        chosen_method = random.choices(methods, weights=weights, k=1)[0]
+        print(f'Selected method: \033[32m{chosen_method}\033[0m')
+        return method_functions[chosen_method]()
+
+    except RequestError as e:
+        print("Elasticsearch request error:", e)
+        return []
+    except Exception as e:
+        print(f"Unhandled error in get_random_unvisited_domains: {e}")
+        return []
 
 
 def is_html_content(content_type: str) -> bool:
@@ -1724,6 +2000,11 @@ async def get_page_async(url: str, playwright):
                 await page.wait_for_load_state("networkidle")
 
             return ctype
+        except PlaywrightError as e:
+            msg = str(e)
+            if "net::ERR_ABORTED" in msg:
+                #print(f"[IGNORED] Navigation aborted for {url}: {msg}")        
+                pass
         except PlaywrightTimeoutError:
             print(f"Timeout fetching {url}, scroll={scroll}")
             return None
@@ -1733,7 +2014,7 @@ async def get_page_async(url: str, playwright):
 
     content_type = await crawl(scroll=False)
     if content_type is None:
-        print(f"Retrying {url} with scrolling...")
+        #print(f"Retrying {url} with scrolling...")
         content_type = await crawl(scroll=True)
 
     content_type = content_type or ""
@@ -1767,14 +2048,28 @@ async def get_page_async(url: str, playwright):
             ctype = response.headers.get("content-type")
 
             try:
-                body_bytes = await response.body()   # always grab raw bytes once
-            except Exception as e:
-                print(f"Could not fetch body for {rurl}: {e}")
+                body_bytes = await response.body()   # try fetching raw bytes
+            except PlaywrightError as e:
+                msg = str(e)
+                if (
+                    "No resource with given identifier found" in msg
+                    or "Target page, context or browser has been closed" in msg
+                    or "Response body is unavailable for redirect responses" in msg
+                    or "No data found for resource with given identifier" in msg
+                    or "Request content was evicted from inspector cache" in msg
+                ):
+                    return  # <-- safely skip instead of printing noisy errors
+                else:
+                    print(f"[ERROR] Could not fetch body for {response.url}: {msg}")                
+                    return
 
             # Decode only if textual content
             if body_bytes and ctype and any(t in ctype for t in ["text", "json", "xml"]):
                 encoding = chardet.detect(body_bytes)["encoding"] or "utf-8"
-                content = body_bytes.decode(encoding, errors="replace")
+                try:
+                    content = body_bytes.decode(encoding, errors="replace")
+                except Exception:
+                    content = ""
 
             if ctype:
                 ctype = sanitize_content_type(ctype)
@@ -1790,16 +2085,22 @@ async def get_page_async(url: str, playwright):
                     if regex.search(ctype):
                         found = True
                         try:
+                            # --- SAFETY: only pass raw_content if it is really bytes ---
+                            raw_content = body_bytes if isinstance(body_bytes, (bytes, bytearray)) else None
+                            if "fonts" in function.__name__ and raw_content is None:
+                                # Skip unsafe call for fonts when no bytes available
+                                return
+
                             urlresult = await function({
                                 'url': rurl,
                                 'content': content,
                                 'content_type': ctype,
-                                'raw_content': body_bytes,
+                                'raw_content': raw_content,
                                 'parent_host': parent_host
                             })
                             page_data["crawledcontent"].update(urlresult)
                         except Exception as e:
-                            print(f"Handler failed for {rurl}: {e}")
+                            print(f"[WARNING] Handler failed for {rurl}: {e}")
                 if not found:
                     print(f"UNKNOWN type -{rurl}- -{ctype}-")
 
@@ -1812,6 +2113,11 @@ async def get_page_async(url: str, playwright):
 
     try:
         await page.goto(url, wait_until="domcontentloaded")
+    except PlaywrightError as e:
+        msg = str(e)
+        if "net::ERR_ABORTED" in msg:
+            #print(f"[IGNORED] Navigation aborted for {url}: {msg}")        
+            pass
     except Exception as e:
         print(f"Error while fetching {url}: {e}")
     finally:
@@ -1837,24 +2143,79 @@ async def get_page_async(url: str, playwright):
     await browser.close()
 
 
+async def run_initial(db,initial_url: str | None = None):
+    url = initial_url or INITIAL_URL
+    async with async_playwright() as playwright:
+        await get_page(url, playwright,db)
 
-async def get_page(url, playwright):
-    db = DatabaseConnection()
-    await get_page_async(url, playwright)
-    presults=preprocess_crawler_data(results)
-    pprint(presults)
+
+async def get_page(url, playwright, db):
+    global results
+    await get_page_async(url, playwright)  # just populates global
+    presults = preprocess_crawler_data(results)
+    #pprint(presults)
     db.save_batch(presults)
-    results.clear()
+    results = {"crawledcontent": {}, "crawledlinks": set()}
+
+async def crawler(db):
+    for iteration in range(ITERATIONS):
+        random_urls = get_random_unvisited_domains(db=db)
+        for target_url in random_urls:
+            try:
+                print('    {}'.format(target_url))
+                async with async_playwright() as playwright:
+                    await get_page(target_url, playwright, db)
+            except UnicodeEncodeError:
+                pass
 
 
 async def main():
-    async with async_playwright() as playwright:
-        url = INITIAL_URL
-        await get_page(url, playwright)
-
-if __name__ == "__main__":
     db = DatabaseConnection()
     urls_index, content_index = db_create_monthly_indexes(db)
     create_directories()
+
+    parser = argparse.ArgumentParser(description="Crawler runner")
+    parser.add_argument(
+        "--initial",
+        nargs="?",              # optional value
+        const=True,             # means "--initial" without value is valid
+        help="Run in initial mode (fetch INITIAL_URL by default, or a custom URL if provided)"
+    )
+    args = parser.parse_args()
+
+    if args.initial:
+        # If user provided a string, it's the URL. If it's just True, use INITIAL_URL.
+        initial_url = None if args.initial is True else args.initial
+        await run_initial(db,initial_url)
+    else:
+        # Normal distributed crawling logic
+        instance = get_instance_number()
+        if instance == 1:
+            if REMOVE_BLOCKED_HOSTS:
+                print("Instance 1: Removing urls from hosts that are blocklisted.")
+                remove_blocked_hosts_from_es_db(db)
+            if REMOVE_BLOCKED_URLS:
+                print("Instance 1: Removing path blocklisted urls.")
+                remove_blocked_urls_from_es_db(db)
+            if REMOVE_INVALID_URLS:
+                print("Instance 1: Deleting invalid urls.")
+                remove_invalid_urls(db)
+            print("Instance 1: Checking for input URL files...")
+            process_input_url_files(db)
+            print("Instance 1: Let's go full crawler mode.")
+            await crawler(db)
+        elif instance == 2:
+            print("Instance 2: Running fast extension pass only.")
+            await crawler(db)
+            #run_fast_extension_pass(db)
+        else:
+            print(f"Instance {instance}: Running full crawler.")
+            await crawler(db)
+
+    db.close()
+
+
+
+if __name__ == "__main__":
     asyncio.run(main())
 
