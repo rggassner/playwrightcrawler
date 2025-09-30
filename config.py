@@ -1,4 +1,8 @@
 
+# --------------------------
+# --- Blocks and removes ---
+# --------------------------
+
 # This option only makes sense to be activated when you have an external
 # script packing data to database, since all crawler data is already
 # filtered while urls are entering.
@@ -10,6 +14,63 @@ REMOVE_BLOCKED_HOSTS = True
 # If urls that are blocked based on path should be deleted from the database.
 REMOVE_BLOCKED_URLS = True
 
+# Do not crawl these domains.
+HOST_REGEX_BLOCK_LIST = [
+    r'localhost:4443$',
+    r'(^|\.)spotify\.com$',
+    r'(^|\.)google$',
+    r'(^|\.)google\.com$',
+    r'(^|\.)gstatic\.com$',
+    r'(^|\.)google\.dev$',
+    r'(^|\.)apache\.org$',
+    r'(^|\.)youtube\.com$',
+    r'(^|\.)archive\.org$',
+    r'(^|\.)booking\.com$',
+    r'(^|\.)haproxy\.org$',
+    r'(^|\.)adthrive\.com$',
+    r'(^|\.)google\.com\.br$',
+    r'(^|\.)googleapis\.com$',
+    r'(^|\.)doubleclick\.net$',
+    r'(^|\.)doubleverify\.com$',
+    r'(^|\.)docs\.oracle\.com$',
+    r'(^|\.)rubiconproject\.com$',
+    r'(^|\.)amazon-adsystem\.com$',
+    r'(^|\.)google-analytics\.com$',
+    r'(^|\.)googletagmanager\.com$',
+    r'(^|\.)googleadservices\.com$',
+    r'(^|\.)syndicatedsearch\.goog$',
+    r'(^|\.)googlesyndication\.com$',
+    r'(^|\.)microsoftonline\.com$',
+    r'(^|\.)softonic.*$',
+]
+
+# Only crawl domains that match this regex
+HOST_REGEX_ALLOW_LIST = [r'.*']
+
+# Do not crawl urls that match any of these regexes
+URL_REGEX_BLOCK_LIST = [
+    '/noticias/modules/noticias/modules/',
+    '/images/images/images/images/',
+    '/plugins/owlcarousel/plugins/',
+]
+
+# --------------------
+# --- Fast crawler ---
+# --------------------
+
+# Delay between fast buckets. Used to decrease the elastic search access.
+FAST_DELAY = 2
+
+# When working with only one worker and if you want to avoid WAFs
+FAST_RANDOM_MIN_WAIT = 0
+FAST_RANDOM_MAX_WAIT = 0
+
+MAX_FAST_WORKERS = 8
+
+
+# --------------------
+# --- What to keep ---
+# --------------------
 
 # Word extraction
 EXTRACT_WORDS = True
@@ -33,11 +94,33 @@ SFW_FOLDER = 'images/sfw'
 DOWNLOAD_ALL_IMAGES = False
 IMAGES_FOLDER = 'images'
 
-DOWNLOAD_FONTS = False
+DOWNLOAD_FONTS = True
 FONTS_FOLDER = 'fonts'
 
 DOWNLOAD_VIDEOS = True
 VIDEOS_FOLDER = 'videos'
+
+DOWNLOAD_MIDIS = True
+MIDIS_FOLDER = 'midis'
+
+DOWNLOAD_AUDIOS = True
+AUDIOS_FOLDER = 'audios'
+
+DOWNLOAD_PDFS = True
+PDFS_FOLDER = 'pdfs'
+
+DOWNLOAD_DOCS = True
+DOCS_FOLDER = 'docs'
+
+DOWNLOAD_DATABASES = True
+DATABASES_FOLDER = 'databases'
+
+DOWNLOAD_TORRENTS = True 
+TORRENTS_FOLDER = 'torrents'
+
+DOWNLOAD_COMPRESSEDS = True
+COMPRESSEDS_FOLDER = 'compresseds'
+
 
 MAX_DIR_LEVELS = 7
 MAX_HOST_LEVELS = 7
@@ -63,26 +146,33 @@ INITIAL_URL = 'https://crawler-test.com/'
 # might sound aggressive for some websites
 HUNT_OPEN_DIRECTORIES = True
 
-# Do not crawl these domains.
-HOST_REGEX_BLOCK_LIST = [
-    r'localhost:4443$',
-    r'(^|\.)spotify\.com$',
-    r'(^|\.)google$',
-]
+INPUT_DIR = 'input_url_files' 
 
+ITERATIONS = 10000
+RANDOM_SITES_QUEUE = 1000
 
-# Only crawl domains that match this regex
-HOST_REGEX_ALLOW_LIST = [r'.*']
+METHOD_WEIGHTS = {
+    "fewest_urls":  1,
+    "oldest":       1,
+    "host_prefix":  1,
+    "random":       100000
+}
 
-# Do not crawl urls that match any of these regexes
-URL_REGEX_BLOCK_LIST = [
-    '/noticias/modules/noticias/modules/',
-    '/images/images/images/images/',
-    '/plugins/owlcarousel/plugins/',
-]
+# -----------------------------
+# --- Playwright parameters ---
+# -----------------------------
+
+# Page timeout in ms
+PAGE_TIMEOUT_MS = 60000
+
+#How many scrolls try before giving up to reach end of page
+SCROLL_ATTEMPTS = 5
+
+#Delay between scrolls
+SCROLL_DELAY = 1.0
 
 # -------------------------------------------
-# Elasticsearch connection configuration
+# Elasticsearch configuration
 # -------------------------------------------
 
 # The hostname or IP address of the Elasticsearch server
@@ -128,29 +218,6 @@ ELASTICSEARCH_RANDOM_BUCKETS = 20
 # Name of the indexes where data will be stored
 CONTENT_INDEX = 'crawler-content'
 LINKS_INDEX = 'crawler-links'
-
-INPUT_DIR = 'input_url_files' 
-
-ITERATIONS = 10000
-RANDOM_SITES_QUEUE = 1000
-
-METHOD_WEIGHTS = {
-    "fewest_urls":  1,
-    "oldest":       1,
-    "host_prefix":  1,
-    "random":       100000
-}
-
-
-# Page timeout in ms
-PAGE_TIMEOUT_MS = 60000
-
-#How many scrolls try before giving up to reach end of page
-SCROLL_ATTEMPTS = 5
-
-#Delay between scrolls
-SCROLL_DELAY = 1.0
-
 
 URLS_MAPPING = {
     "mappings": {
