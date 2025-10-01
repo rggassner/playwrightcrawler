@@ -25,15 +25,16 @@ from datetime import datetime, timezone
 from PIL import Image, UnidentifiedImageError
 from playwright.async_api import async_playwright
 from playwright.async_api import Error as PlaywrightError
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from urllib3.exceptions import InsecureRequestWarning
 from elasticsearch import helpers, ConflictError
 from elasticsearch import NotFoundError, RequestError
 from elasticsearch import Elasticsearch
 from elasticsearch import exceptions as es_exceptions
 from elasticsearch.exceptions import NotFoundError, RequestError
-from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs
+from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
 
 
 
@@ -59,259 +60,20 @@ content_type_functions = []
 results = {"crawledcontent": {}, "crawledlinks": set()}
 
 
-def create_directories():
-    dirs = ["images", "images/sfw", "images/nsfw", "fonts", "videos", "input_url_files", "midis", "audios", "pdfs", "docs", "databases", "torrents", "compresseds"]
-    for d in dirs:
-        os.makedirs(d, exist_ok=True)
-
-
-def get_host_levels(hostname):
-    hostname = hostname.split(':')[0]  # Remove port if present
-    parts = hostname.split('.')
-    parts_reversed = list(parts)
-    return {
-        "host_levels": parts_reversed,
-        "host_level_map": {
-            f"host_level_{i+1}": level
-            for i, level in enumerate(parts_reversed)
-        }
-    }
-
-def get_directory_levels(url_path):
-    # Split the URL path into parts and remove empty strings
-    levels = [p for p in url_path.strip("/").split("/") if p]
-
-    # Ensure the levels list is padded to MAX_DIR_LEVELS
-    if len(levels) < MAX_DIR_LEVELS:
-        levels = levels + [''] * (MAX_DIR_LEVELS - len(levels))  # Add empty levels at the end
-
-    # Map the levels to their directory level numbers
-    directory_level_map = {f"directory_level_{i+1}": levels[i] for i in range(len(levels))}
-
-    return {
-        "directory_levels": levels,
-        "directory_level_map": directory_level_map
-    }
-        
-
-
-def preprocess_crawler_data(data: dict) -> dict:
-    crawledcontent = data.get("crawledcontent", {})
-    crawledlinks = data.get("crawledlinks", set())
-
-    filtered_links = {}
-    new_crawledcontent = {}
-
-    for url in crawledlinks:
-        host = urlsplit(url).hostname
-        if not host:
-            continue  # skip links without host
-        if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
-            if url not in crawledcontent:
-                filtered_links[url] = host  # store url -> host
-
-    for url, doc in crawledcontent.items():
-        host = urlsplit(url).hostname
-        if not host:
-            continue  # skip if content URL has no host
-        if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
-            new_doc = doc.copy()
-            insert_only_fields = {}
-
-            parsed = urlsplit(url)
-
-            # --- Emails ---
-            email = doc.get("emails") or doc.get("email")
-            if email and isinstance(email, str):
-                insert_only_fields["emails"] = [email]
-
-            # --- Query info ---
-            has_query = bool(parsed.query)
-            query_variables = []
-            query_values = []
-            if has_query:
-                parsed_qs = parse_qs(parsed.query)
-                query_variables = list(parsed_qs.keys())
-                query_values = [v for vals in parsed_qs.values() for v in vals]
-
-            insert_only_fields["has_query"] = has_query
-            if query_variables:
-                insert_only_fields["query_variables"] = query_variables
-            if query_values:
-                insert_only_fields["query_values"] = query_values
-
-            # --- Host levels ---
-            host_parts = get_host_levels(host).get("host_levels", [])
-            if len(host_parts) < MAX_HOST_LEVELS:
-                host_parts = [''] * (MAX_HOST_LEVELS - len(host_parts)) + host_parts
-            insert_only_fields["host_levels"] = host_parts
-            for i, part in enumerate(reversed(host_parts[-MAX_HOST_LEVELS:])):
-                insert_only_fields[f"host_level_{i+1}"] = part
-
-            # --- Host name ---
-
-            insert_only_fields["host"] = host
-
-            # --- Directory levels ---
-            dir_parts = get_directory_levels(parsed.path).get("directory_levels", [])
-            if len(dir_parts) < MAX_DIR_LEVELS:
-                dir_parts = [''] * (MAX_DIR_LEVELS - len(dir_parts)) + dir_parts
-            insert_only_fields["directory_levels"] = dir_parts
-            for i, part in enumerate(dir_parts[:MAX_DIR_LEVELS]):
-                insert_only_fields[f"directory_level_{i+1}"] = part
-
-            # --- File extension ---
-            _, file_extension = os.path.splitext(unquote(parsed.path))
-            if file_extension:
-                insert_only_fields['file_extension'] = file_extension.lower().lstrip('.')
-
-            # Merge extra fields
-            new_doc.update(insert_only_fields)
-            new_crawledcontent[url] = new_doc
-
-    return {
-        "crawledcontent": new_crawledcontent,
-        "crawledlinks": filtered_links  # now a dict url -> host
-    }
-
-
-
-class DatabaseConnection:
-
-    def __init__(self):
-        es_config = {
-            "hosts": [f"https://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"],
-            "basic_auth": (ELASTICSEARCH_USER, ELASTICSEARCH_PASSWORD),
-            "verify_certs": ELASTICSEARCH_VERIFY_CERTS,
-            "request_timeout": ELASTICSEARCH_TIMEOUT,
-            "retry_on_timeout": ELASTICSEARCH_RETRY,
-            "max_retries": ELASTICSEARCH_RETRIES,
-            "http_compress": ELASTICSEARCH_HTTP_COMPRESS
-        }
-        if ELASTICSEARCH_CA_CERT_PATH:
-            es_config["ca_certs"] = ELASTICSEARCH_CA_CERT_PATH
-        self.es = Elasticsearch(**es_config)
-        self.con = self.es
-
-    def close(self):
-        self.es.close()
-
-    def commit(self):
-        pass
-
-    def search(self, *args, **kwargs):
-        return self.es.search(*args, **kwargs)
-
-    def scroll(self, *args, **kwargs):
-        return self.es.scroll(*args, **kwargs)
-
-
-    def _get_index_name(self, base: str) -> str:
-        """Return index name with year-month suffix (timezone-aware)."""
-        suffix = datetime.now(timezone.utc).strftime("%Y-%m")
-        return f"{base}-{suffix}"
-
-    def save_batch(self, data: dict):
-        """
-        Save crawled content + links into Elasticsearch using streaming_bulk.
-        Skips links without host.
-        """
-        if not self.con:
-            raise ValueError("db connection is required")
-
-        urls_index = self._get_index_name(LINKS_INDEX)
-        content_index = self._get_index_name(CONTENT_INDEX)
-
-        actions = []
-
-        # --- crawledcontent ---
-        for url, doc in data.get("crawledcontent", {}).items():
-            doc["created_at"] = datetime.now(timezone.utc)
-            doc["updated_at"] = datetime.now(timezone.utc)
-            actions.append({
-                "_op_type": "index",
-                "_index": content_index,
-                "_id": url_to_id(url),
-                "_source": doc
-            })
-
-        # --- crawledlinks ---
-        for url, host in data.get("crawledlinks", {}).items():
-            if not host:
-                continue  # skip links with no host
-            doc = {
-                "url": url,
-                "host": host,
-                "visited": False,
-                "created_at": datetime.now(timezone.utc),
-                "updated_at": datetime.now(timezone.utc)
-            }
-            actions.append({
-                "_op_type": "index",
-                "_index": urls_index,
-                "_id": url_to_id(url),
-                "_source": doc
-            })
-
-        # --- Insert using streaming_bulk with per-item error logging ---
-        failed_count = 0
-        for ok, item in helpers.streaming_bulk(
-            self.es.options(request_timeout=240),
-            actions,
-            raise_on_error=False,
-            raise_on_exception=False
-        ):
-            if not ok:
-                failed_count += 1
-                print("[BULK FAILED] Document:", item)
-
-        #print(f"[BULK] Inserted {len(actions) - failed_count} docs successfully, {failed_count} failed")
-
-
-def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
-    urls_index = f"{LINKS_INDEX}-*"
-    host_to_url = {}
-            
-    # Scan the entire index, but keep only one URL per host
-    query = {"query": {"match_all": {}}}
-    for doc in helpers.scan(db.es, index=urls_index, query=query):
-        url = doc['_source'].get('url')
-        if not url:
-            continue
-        host = urlsplit(url).hostname
-        if not host:
-            continue
-    
-        # Reservoir sampling: randomly keep one URL per host
-        if host not in host_to_url:
-            host_to_url[host] = url
-        else:
-            if random.random() < 0.5:
-                host_to_url[host] = url
-
-    all_urls = list(host_to_url.values())
-    random.shuffle(all_urls)  # <--- ensure random order every time
-
-    if len(all_urls) > size:
-        all_urls = all_urls[:size]  # already shuffled, so this is a random cut
-
-    return all_urls
-
-
-def url_to_id(url: str) -> str:
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()
-
-def get_index_name(base: str) -> str:
-    suffix = datetime.now(timezone.utc).strftime("%Y-%m")
-    return f"{base}-{suffix}"
-
-def db_create_monthly_indexes(db=None):
-    if db is None or db.es is None:  # <- changed from db.con
-        raise ValueError("db connection is required")
-    urls_index = get_index_name(LINKS_INDEX)
-    content_index = get_index_name(CONTENT_INDEX)
-
-    return urls_index, content_index
+content_type_octetstream = [
+        r"^text/octet$",
+        r"^octet/stream$",
+        r"^binary/octet-stream$",
+        r"^application/octetstream$",
+        r"^application/octet-stream$",
+        r"^application/x-octet-stream$"
+        r"^x-application/octet-stream$",
+        r"^application/octet-stream,text/html$",
+        r"^application/octet-stream,atext/plain$",
+        r"^application/octet-streamCharset=UTF-8$",
+        r"^application/octet-stream,text/plain$",
+        r"^application/vnd\.google\.octet-stream-compressible$",
+    ]
 
 content_type_html_regex = [
         r"^text/html$",
@@ -377,7 +139,6 @@ content_type_plain_text_regex = [
         r"^application/text$",
         r"^text/x-html-parts$",
         r"^application/jsonp$",
-        r"^text/x-javascript$",
         r"^text/event-stream$",
         r"^text/vnd\.graphviz$",
         r"^application/json-p$",
@@ -472,6 +233,7 @@ content_type_plain_text_regex = [
     ]
 
 content_type_image_regex = [
+        r"^jpg$",
         r"^png$",
         r"^webp$",
         r"^jpeg$",
@@ -561,9 +323,6 @@ content_type_audio_regex = [
         r"^application/mp4$",
         r"^audio/x-oggvorbis$",
         r"^audio/x-pn-realaudio$",
-        r"^application/octetstream$",
-        r"^application/octet-stream$",
-        r"^application/x-octet-stream$",
         r"^audio/x-pn-realaudio-plugin$",
         r"^application/vnd\.rn-realmedia$",
     ]
@@ -593,11 +352,8 @@ content_type_video_regex = [
         r"^video/iso.segment$",
         r"^application/x-mpegurl$",
         r"^video/vnd\.objectvideo$",
-        r"^application/octetstream$",
         r"^application/vnd\.ms-asf$",
-        r"^application/octet-stream$",
         r"^video/vnd\.dlna\.mpeg-tts$",
-        r"^application/x-octet-stream$",
         r"^application/x-shockwave-flash$",
         r"^application/vnd\.apple\.mpegurl$",
         r"^application/vnd\.adobe\.flash\.movie$",
@@ -678,23 +434,16 @@ content_type_font_regex = [
         r"^application/font/woff2$",
         r"^application/font-woff2$",
         r"^application/x-font-woff$",
-        r"^application/octetstream$",
         r"^application/x-font-woff2$",
-        r"^application/octet-stream$",
-        r"^application/x-octet-stream$",
         r"^application/x-font-truetype$",
         r"^application/x-font-opentype$",
         r"^value=application/x-font-woff2$",
         r"^application/vnd\.ms-fontobject$",
         r"^application/font-woff2,font/woff2$",
-        r"^font/woff2\|application/octet-stream\|font/x-woff2$",
         ]
 
 content_type_torrent_regex = [
         r"^application/x-bittorrent$",
-        r"^application/octetstream$",
-        r"^application/octet-stream$",
-        r"^application/x-octet-stream$",
         ]
 
 content_type_compressed_regex = [
@@ -715,9 +464,7 @@ content_type_compressed_regex = [
         r"^application/vnd\.rar$",
         r"^application/x-tar-gz$",
         r"^application/x-compress$",
-        r"^application/octetstream$",
-        r"^application/octet-stream$",
-        r"^application/x-octet-stream$",
+        r"^application/zip-compressed$",
         r"^application/x-7z-compressed$",
         r"^application/x-rar-compressed$",
         r"^application/x-zip-compressed$",
@@ -747,11 +494,9 @@ content_type_all_others_regex = [
         r"^model/obj$",
         r"^model/step$",
         r"^test/plain$",
-        r"^text/octet$",
         r"^text/x-scss$",
         r"^application$",
         r"^Content-Type$",
-        r"^octet/stream$",
         r"^cms/redirect$",
         r"^message/news$",
         r"^text/x-matlab$",
@@ -785,6 +530,7 @@ content_type_all_others_regex = [
         r"^application/null$",
         r"^application/zlib$",
         r"^application/x-sh$",
+        r"^text/x-javascript$",
         r"^application/empty$",
         r"^application/x-cbr$",
         r"^text/plaincharset:",
@@ -796,6 +542,8 @@ content_type_all_others_regex = [
         r"^application/x-xar$",
         r"^application/proto$",
         r"^model/gltf-binary$",
+        r"^text/htmltext/css$",
+        r"^text/html,text/css$",
         r"^application/x-shar$",
         r"^application/x-ruby$",
         r"^application/x-frpc$",
@@ -806,7 +554,6 @@ content_type_all_others_regex = [
         r"^application/x-doom$",
         r"^application/x-troff$",
         r"^text/remix-deferred$",
-        r"^binary/octet-stream$",
         r"^application/express$",
         r"^multipart/form-data$",
         r"^application/x-trash$",
@@ -863,7 +610,6 @@ content_type_all_others_regex = [
         r"^javascriptcharset=UTF-8$",
         r"^chemical/x-galactic-spc$",
         r"^application/vnd\.yt-ump$",
-        r"^application/octetstream$",
         r"^application/x-xpinstall$",
         r"^application/x-httpd-php$",
         r"^application/x-directory$",
@@ -873,7 +619,6 @@ content_type_all_others_regex = [
         r"^application/java-archive$",
         r"^application/x-javascript$",
         r"^application/x-msdownload$",
-        r"^application/octet-stream$",
         r"^application/vnd\.ms-word$",
         r"^application/x-executable$",
         r"^application/marcxml\+xml$",
@@ -888,9 +633,7 @@ content_type_all_others_regex = [
         r"^application/force-download$",
         r"^application/vnd\.visionary$",
         r"^application/x-java-archive$",
-        r"^application/x-octet-stream$",
         r"^application/x-x509-ca-cert$",
-        r"^x-application/octet-stream$",
         r"^application/mac-compactpro$",
         r"^application/x-endnote-refer$",
         r"^application/vnd\.olpc-sugar$",
@@ -921,6 +664,7 @@ content_type_all_others_regex = [
         r"^application/vnd\.wv\.csp\+wbxml$",
         r"^application/x-ms-dos-executable$",
         r"^application/vnd\.geogebra\.file$",
+        r"^text/html,application/javascript$",
         r"^application/grpc-web-text\+proto$",
         r"^application/vnd\.lotus-screencam$",
         r"^application/x-pkcs7-certificates$",
@@ -928,15 +672,11 @@ content_type_all_others_regex = [
         r"^application/vnd\.google-earth\.kmz$",
         r"^application/x-typekit-augmentation$",
         r"^application/x-unknown-content-type$",
-        r"^application/octet-stream,text/html$",
-        r"^application/octet-stream,text/plain$",
         r"^application/x-research-info-systems$",
         r"^application/vnd\.mapbox-vector-tile$",
-        r"^application/octet-stream,atext/plain$",
         r"^application/vnd\.cas\.services\+yaml$",
         r"^application/x-redhat-package-manager$",
         r"^application/vnd\.groove-tool-template$",
-        r"^application/octet-streamCharset=UTF-8$",
         r"^application/vnd\.apple\.installer\+xml$",
         r"^application/opensearchdescription\+xml$",
         r"^application/vnd\.google-earth\.kml\+xml$",
@@ -946,11 +686,31 @@ content_type_all_others_regex = [
         r"^application/javascriptapplication/x-javascript$",
         r"^application/javascript,application/x-javascript$",
         r"^application/vnd\.oasis\.opendocument\.spreadsheet$",
-        r"^application/vnd\.google\.octet-stream-compressible$",
         r"^application/vnd\.oasis\.opendocument\.presentation$",
         r"^application/vnd\.openxmlformats-officedocument\.spre$",
         r"^application/vnd\.oasis\.opendocument\.formula-template$",
     ]
+
+"""Extend regex lists with octet-stream types if enabled."""
+if USE_OCTET_STREAM:
+    categories = [
+        content_type_database_regex,
+        content_type_image_regex,
+        content_type_midi_regex,
+        content_type_audio_regex,
+        content_type_video_regex,
+        content_type_pdf_regex,
+        content_type_doc_regex,
+        content_type_font_regex,
+        content_type_torrent_regex,
+        content_type_compressed_regex,
+    ]
+    for category in categories:
+        for pattern in content_type_octetstream:
+            if pattern not in category:
+                category.append(pattern)
+
+
 
 # IMPORTANT: When adding a new extension and its corresponding content-type group here,
 # make sure to also update the `needs_download` logic in the `fast_extension_crawler` function
@@ -994,41 +754,313 @@ EXTENSION_MAP = {
         ".TTF": content_type_font_regex,
         ".woff": content_type_font_regex,
         ".woff2": content_type_font_regex,
+        ".fits": content_type_image_regex,
         ".gif": content_type_image_regex,
+        ".HEIC": content_type_image_regex,
         ".ico": content_type_image_regex,
         ".jp2": content_type_image_regex,
         ".jpg": content_type_image_regex,
         ".JPG": content_type_image_regex,
+        ".jpeg": content_type_image_regex,
         ".pbf": content_type_image_regex,
         ".png": content_type_image_regex,
         ".PNG": content_type_image_regex,
         ".psd": content_type_image_regex,
         ".svg": content_type_image_regex,
-        ".fits": content_type_image_regex,
-        ".HEIC": content_type_image_regex,
-        ".jpeg": content_type_image_regex,
         ".tiff": content_type_image_regex,
+        ".webp": content_type_image_regex,
         ".mid": content_type_midi_regex,
         ".Mid": content_type_midi_regex,
         ".midi": content_type_midi_regex,
         ".pdf": content_type_pdf_regex,
         ".torrent": content_type_torrent_regex,
-        ".wm": content_type_video_regex,
-        ".mp4": content_type_video_regex,
-        ".wmv": content_type_video_regex,
         ".3gp": content_type_video_regex,
-        ".mkv": content_type_video_regex,
-        ".swf": content_type_video_regex,
         ".asf": content_type_video_regex,
+        ".flv": content_type_video_regex,
+        ".m3u8": content_type_video_regex,
         ".m4s": content_type_video_regex,
-        ".ogv": content_type_video_regex,
+        ".mkv": content_type_video_regex,
         ".mov": content_type_video_regex,
         ".MOV": content_type_video_regex,
-        ".flv": content_type_video_regex,
+        ".mp4": content_type_video_regex,
         ".mpg": content_type_video_regex,
         ".mpeg": content_type_video_regex,
+        ".ogv": content_type_video_regex,
+        ".swf": content_type_video_regex,
         ".webm": content_type_video_regex,
+        ".wm": content_type_video_regex,
+        ".wmv": content_type_video_regex,
     }
+
+def db_create_monthly_indexes(db=None):
+    if db is None or db.es is None:  # <- changed from db.con
+        raise ValueError("db connection is required")
+    urls_index = get_index_name(LINKS_INDEX)
+    content_index = get_index_name(CONTENT_INDEX)
+
+    return urls_index, content_index
+
+
+def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
+    urls_index = f"{LINKS_INDEX}-*"
+    host_to_url = {}
+
+    # Scan the entire index, but keep only one URL per host
+    query = {"query": {"match_all": {}}}
+    for doc in helpers.scan(db.es, index=urls_index, query=query):
+        url = doc['_source'].get('url')
+        if not url:
+            continue
+        host = urlsplit(url).hostname
+        if not host:
+            continue
+
+        # Reservoir sampling: randomly keep one URL per host
+        if host not in host_to_url:
+            host_to_url[host] = url
+        else:
+            if random.random() < 0.5:
+                host_to_url[host] = url
+
+    all_urls = list(host_to_url.values())
+    random.shuffle(all_urls)  # <--- ensure random order every time
+
+    if len(all_urls) > size:
+        all_urls = all_urls[:size]  # already shuffled, so this is a random cut
+
+    return all_urls
+
+
+def url_to_id(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+def get_index_name(base: str) -> str:
+    suffix = datetime.now(timezone.utc).strftime("%Y-%m")
+    return f"{base}-{suffix}"
+
+
+class DatabaseConnection:
+
+    def __init__(self):
+        es_config = {
+            "hosts": [f"https://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"],
+            "basic_auth": (ELASTICSEARCH_USER, ELASTICSEARCH_PASSWORD),
+            "verify_certs": ELASTICSEARCH_VERIFY_CERTS,
+            "request_timeout": ELASTICSEARCH_TIMEOUT,
+            "retry_on_timeout": ELASTICSEARCH_RETRY,
+            "max_retries": ELASTICSEARCH_RETRIES,
+            "http_compress": ELASTICSEARCH_HTTP_COMPRESS
+        }
+        if ELASTICSEARCH_CA_CERT_PATH:
+            es_config["ca_certs"] = ELASTICSEARCH_CA_CERT_PATH
+        self.es = Elasticsearch(**es_config)
+        self.con = self.es
+
+    def close(self):
+        self.es.close()
+
+    def commit(self):
+        pass
+
+    def search(self, *args, **kwargs):
+        return self.es.search(*args, **kwargs)
+
+    def scroll(self, *args, **kwargs):
+        return self.es.scroll(*args, **kwargs)
+
+
+    def _get_index_name(self, base: str) -> str:
+        """Return index name with year-month suffix (timezone-aware)."""
+        suffix = datetime.now(timezone.utc).strftime("%Y-%m")
+        return f"{base}-{suffix}"
+
+    def save_batch(self, data: dict):
+        """
+        Save crawled content + links into Elasticsearch using streaming_bulk.
+        Skips links without host.
+        """
+        if not self.con:
+            raise ValueError("db connection is required")
+
+        urls_index = self._get_index_name(LINKS_INDEX)
+        content_index = self._get_index_name(CONTENT_INDEX)
+
+        actions = []
+
+        # --- crawledcontent ---
+        for url, doc in data.get("crawledcontent", {}).items():
+            doc["created_at"] = datetime.now(timezone.utc)
+            doc["updated_at"] = datetime.now(timezone.utc)
+            actions.append({
+                "_op_type": "index",
+                "_index": content_index,
+                "_id": url_to_id(url),
+                "_source": doc
+            })
+
+        # --- crawledlinks ---
+        for url, host in data.get("crawledlinks", {}).items():
+            if not host:
+                continue  # skip links with no host
+            doc = {
+                "url": url,
+                "host": host,
+                "visited": False,
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc)
+            }
+            actions.append({
+                "_op_type": "index",
+                "_index": urls_index,
+                "_id": url_to_id(url),
+                "_source": doc
+            })
+
+        # --- Insert using streaming_bulk with per-item error logging ---
+        failed_count = 0
+        for ok, item in helpers.streaming_bulk(
+            self.es.options(request_timeout=240),
+            actions,
+            raise_on_error=False,
+            raise_on_exception=False
+        ):
+            if not ok:
+                failed_count += 1
+                print("[BULK FAILED] Document:", item)
+
+        #print(f"[BULK] Inserted {len(actions) - failed_count} docs successfully, {failed_count} failed")
+
+
+
+
+def create_directories():
+    dirs = ["images", "images/sfw", "images/nsfw", "fonts", "videos", "input_url_files", "midis", "audios", "pdfs", "docs", "databases", "torrents", "compresseds"]
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
+
+
+def get_host_levels(hostname):
+    hostname = hostname.split(':')[0]  # Remove port if present
+    parts = hostname.split('.')
+    parts_reversed = list(parts)
+    return {
+        "host_levels": parts_reversed,
+        "host_level_map": {
+            f"host_level_{i+1}": level
+            for i, level in enumerate(parts_reversed)
+        }
+    }
+
+
+def preprocess_crawler_data(data: dict) -> dict:
+
+    crawledcontent = data.get("crawledcontent", {})
+    crawledlinks = data.get("crawledlinks", set())
+
+    filtered_links = {}
+    new_crawledcontent = {}
+
+    for url in crawledlinks:
+        try:
+            parts = urlsplit(url)
+            host = parts.hostname
+            if not host:
+                continue  # skip links without host
+            
+            # Strip fragment (#whatever)
+            normalized_url = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+            normalized_url = sanitize_url(normalized_url)
+            if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(normalized_url):
+                if normalized_url not in crawledcontent:
+                    filtered_links[normalized_url] = host  # store normalized_url -> host
+        except Exception as e:
+            print(f"[WARN] Failed to normalize {url}: {e}")
+            continue    
+
+    for url, doc in crawledcontent.items():
+        host = urlsplit(url).hostname
+        if not host:
+            continue  # skip if content URL has no host
+        if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
+            new_doc = doc.copy()
+            insert_only_fields = {}
+
+            parsed = urlsplit(url)
+
+            # --- Emails ---
+            email = doc.get("emails") or doc.get("email")
+            if email and isinstance(email, str):
+                insert_only_fields["emails"] = [email]
+
+            # --- Query info ---
+            has_query = bool(parsed.query)
+            query_variables = []
+            query_values = []
+            if has_query:
+                parsed_qs = parse_qs(parsed.query)
+                query_variables = list(parsed_qs.keys())
+                query_values = [v for vals in parsed_qs.values() for v in vals]
+
+            insert_only_fields["has_query"] = has_query
+            if query_variables:
+                insert_only_fields["query_variables"] = query_variables
+            if query_values:
+                insert_only_fields["query_values"] = query_values
+
+            # --- Host levels ---
+            host_parts = get_host_levels(host).get("host_levels", [])
+            if len(host_parts) < MAX_HOST_LEVELS:
+                host_parts = [''] * (MAX_HOST_LEVELS - len(host_parts)) + host_parts
+            insert_only_fields["host_levels"] = host_parts
+            for i, part in enumerate(reversed(host_parts[-MAX_HOST_LEVELS:])):
+                insert_only_fields[f"host_level_{i+1}"] = part
+
+            # --- Host name ---
+
+            insert_only_fields["host"] = host
+
+            # --- Directory levels ---
+            dir_parts = get_directory_levels(parsed.path).get("directory_levels", [])
+            if len(dir_parts) < MAX_DIR_LEVELS:
+                dir_parts = [''] * (MAX_DIR_LEVELS - len(dir_parts)) + dir_parts
+            insert_only_fields["directory_levels"] = dir_parts
+            for i, part in enumerate(dir_parts[:MAX_DIR_LEVELS]):
+                insert_only_fields[f"directory_level_{i+1}"] = part
+
+            # --- File extension ---
+            _, file_extension = os.path.splitext(unquote(parsed.path))
+            if file_extension:
+                insert_only_fields['file_extension'] = file_extension.lower().lstrip('.')
+
+            # Merge extra fields
+            new_doc.update(insert_only_fields)
+            new_crawledcontent[url] = new_doc
+
+    return {
+        "crawledcontent": new_crawledcontent,
+        "crawledlinks": filtered_links  # now a dict url -> host
+    }
+
+
+
+
+
+def get_directory_levels(url_path):
+    # Split the URL path into parts and remove empty strings
+    levels = [p for p in url_path.strip("/").split("/") if p]
+
+    # Ensure the levels list is padded to MAX_DIR_LEVELS
+    if len(levels) < MAX_DIR_LEVELS:
+        levels = levels + [''] * (MAX_DIR_LEVELS - len(levels))  # Add empty levels at the end
+
+    # Map the levels to their directory level numbers
+    directory_level_map = {f"directory_level_{i+1}": levels[i] for i in range(len(levels))}
+
+    return {
+        "directory_levels": levels,
+        "directory_level_map": directory_level_map
+    }
+
 
 
 def function_for_url(regexp_list):
@@ -1408,6 +1440,11 @@ async def content_type_fonts(args):
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
 
+
+            if EXTENSION_MAP.get(ext) is not content_type_font_regex:
+                print(f"[SKIP FONT] Extension '{ext}' not mapped to font regex ({content_type}). URL={url}")
+                return {}
+
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "font"
             ext = re.sub(r"[^\w\-.]", "_", ext)
@@ -1493,6 +1530,10 @@ async def content_type_videos(args):
 
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
+
+            if EXTENSION_MAP.get(ext) is not content_type_video_regex:
+                print(f"[SKIP VIDEO] Extension '{ext}' not mapped to video regex ({content_type}). URL={url}")
+                return {}
 
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "video"
@@ -1582,6 +1623,10 @@ async def content_type_midis(args):
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
 
+            if EXTENSION_MAP.get(ext) is not content_type_midi_regex:
+                print(f"[SKIP MIDI] Extension '{ext}' not mapped to midi regex ({content_type}). URL={url}")
+                return {}
+
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "midi"
             ext = re.sub(r"[^\w\-.]", "_", ext)
@@ -1669,6 +1714,10 @@ async def content_type_audios(args):
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
 
+            if EXTENSION_MAP.get(ext) is not content_type_audio_regex:
+                print(f"[SKIP AUDIO] Extension '{ext}' not mapped to audio regex ({content_type}). URL={url}")
+                return {}
+
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "audio"
             ext = re.sub(r"[^\w\-.]", "_", ext)
@@ -1755,6 +1804,10 @@ async def content_type_pdfs(args):
 
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
+
+            if EXTENSION_MAP.get(ext) is not content_type_pdf_regex:
+                print(f"[SKIP PDF] Extension '{ext}' not mapped to pdf regex ({content_type}). URL={url}")
+                return {}
 
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "pdf"
@@ -1844,6 +1897,10 @@ async def content_type_docs(args):
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
 
+            if EXTENSION_MAP.get(ext) is not content_type_doc_regex:
+                print(f"[SKIP DOC] Extension '{ext}' not mapped to doc regex ({content_type}). URL={url}")
+                return {}
+
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "doc"
             ext = re.sub(r"[^\w\-.]", "_", ext)
@@ -1930,6 +1987,10 @@ async def content_type_databases(args):
 
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
+
+            if EXTENSION_MAP.get(ext) is not content_type_database_regex:
+                print(f"[SKIP DATABASE] Extension '{ext}' not mapped to database regex ({content_type}). URL={url}")
+                return {}
 
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "database"
@@ -2019,6 +2080,10 @@ async def content_type_torrents(args):
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
 
+            if EXTENSION_MAP.get(ext) is not content_type_torrent_regex:
+                print(f"[SKIP TORRENT] Extension '{ext}' not mapped to torrent regex ({content_type}). URL={url}")
+                return {}
+
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "torrent"
             ext = re.sub(r"[^\w\-.]", "_", ext)
@@ -2105,6 +2170,10 @@ async def content_type_compresseds(args):
 
             # Split extension
             name_part, ext = os.path.splitext(decoded_name)
+
+            if EXTENSION_MAP.get(ext) is not content_type_compressed_regex:
+                print(f"[SKIP COMPRESSED] Extension '{ext}' not mapped to compressed regex ({content_type}). URL={url}")
+                return {}
 
             # Sanitize
             name_part = re.sub(r"[^\w\-.]", "_", name_part) or "compressed"
@@ -2717,12 +2786,12 @@ def deduplicate_links_vs_content_es(
 ):
     """
     Deletes all docs from links_index_pattern that already exist in content_index_pattern
-    by comparing the "url" field.
+    by comparing the _id field (url_hash).
     Handles large indices with scroll and batches.
     """
     es = db.es
-    print(f"Fetching URLs from {content_index_pattern} to deduplicate against {links_index_pattern}...")
-    
+    print(f"Fetching _ids from {content_index_pattern} to deduplicate against {links_index_pattern}...")
+
     deleted_total = 0
 
     # --- Initialize scroll search ---
@@ -2732,7 +2801,7 @@ def deduplicate_links_vs_content_es(
         body={
             "size": batch_size,
             "query": {"match_all": {}},
-            "_source": ["url"]
+            "_source": False
         }
     )
 
@@ -2740,12 +2809,13 @@ def deduplicate_links_vs_content_es(
     hits = scroll["hits"]["hits"]
 
     while hits:
-        # Extract URLs from this batch
-        urls = [h["_source"]["url"] for h in hits if "url" in h["_source"]]
-        if urls:
+        # Extract IDs
+        ids = [h["_id"] for h in hits]
+
+        if ids:
             response = es.delete_by_query(
                 index=links_index_pattern,
-                body={"query": {"terms": {"url.keyword": urls}}},
+                body={"query": {"ids": {"values": ids}}},
                 slices="auto",
                 conflicts="proceed",
                 refresh=True,
@@ -2762,10 +2832,11 @@ def deduplicate_links_vs_content_es(
     try:
         es.clear_scroll(scroll_id=scroll_id)
     except Exception:
-        pass  # ignore if already cleared
+        pass
 
     print(f"Deduplication done. Deleted {deleted_total} docs from {links_index_pattern}.")
     return deleted_total
+
 
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     print("Housekeeping links that are already in content.")
@@ -2820,7 +2891,8 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
 
                 for result in batch_results:
                     if isinstance(result, Exception):
-                        print(f"[FAST CRAWLER] Exception during execution: {result}")
+                        #print(f"[FAST CRAWLER] Exception during execution: {result}")
+                        pass
                     elif result:
                         presults = preprocess_crawler_data(result)
                         # Merge presults into the current batch results
@@ -2844,7 +2916,8 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
             db.es.clear_scroll(scroll_id=scroll_id)
 
         except Exception as e:
-            print(f"[FAST CRAWLER] Error retrieving URLs for extension {extension}: {e}")
+            #print(f"[FAST CRAWLER] Error retrieving URLs for extension {extension}: {e}")
+            pass
 
 
 async def fast_extension_crawler(url, extension, content_type_patterns, db):
@@ -2857,13 +2930,13 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
             headers=headers
         )
     except Exception:
-        print(f"[FAST CRAWLER] No head {url}")
+        #print(f"[FAST CRAWLER] No head {url}")
         async with async_playwright() as playwright:
             await get_page(url, playwright, db)
         return
 
     if not (200 <= head_resp.status_code < 300):
-        print(f"[FAST CRAWLER] No code 2xx {url}")
+        #print(f"[FAST CRAWLER] No code 2xx {url}")
         async with async_playwright() as playwright:
             await get_page(url, playwright, db)
         return
@@ -2872,14 +2945,15 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
 
     content_type = head_resp.headers.get("Content-Type", "")
     if not content_type:
-        print(f"[FAST CRAWLER] No content type found for {url}")
+        #print(f"[FAST CRAWLER] No content type found for {url}")
         async with async_playwright() as playwright:
             await get_page(url, playwright, db)
         return
 
     content_type = content_type.lower().split(";")[0].strip()
     if not any(re.match(pattern, content_type) for pattern in content_type_patterns):
-        print(f"[FAST CRAWLER] Mismatch content type for {url}, got: {content_type}")
+        if content_type not in ['text/html','text/plain','application/json','text/javascript']:
+            print(f"[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-")
         async with async_playwright() as playwright:
             await get_page(url, playwright, db)
         return
@@ -2916,7 +2990,7 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
                         )
                         content = get_resp.content
                     except Exception as e:
-                        print(f"[FAST CRAWLER] Failed GET for {url}: {e}")
+                        #print(f"[FAST CRAWLER] Failed GET for {url}: {e}")
                         return
 
                 # Call the correct handler
@@ -2938,7 +3012,8 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
             print(f"[FAST CRAWLER] UNKNOWN type -{url}- -{content_type}-")
 
     except Exception as e:
-        print(f"[FAST CRAWLER] Error processing {url}: {e}")
+        #print(f"[FAST CRAWLER] Error processing {url}: {e}")
+        pass
 
     await asyncio.sleep(random.uniform(FAST_RANDOM_MIN_WAIT, FAST_RANDOM_MAX_WAIT))
 
@@ -2952,7 +3027,6 @@ def is_html_content(content_type: str) -> bool:
 
 # --- main function ---
 
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 async def get_page_async(url: str, playwright):
     browser = await playwright.chromium.launch(headless=True)
@@ -3103,21 +3177,22 @@ async def get_page_async(url: str, playwright):
     finally:
         page.remove_listener("response", handler)
         await browser.close()
-    if is_html_content(content_type):
-        page_data["crawledcontent"].update({
-            url: {
-                "url": url,
-                "content_type": content_type,
-                "isopendir": isopendir,
-                "opendir_pattern": pat,
-                "visited": True,
-                "words": words,
-                "min_webcontent": min_webcontent,
-                "raw_webcontent": raw_webcontent,
-                "source": 'get_page_async',
-                "parent_host": parent_host
-            }
-        })
+
+    #if is_html_content(content_type):
+    page_data["crawledcontent"].update({
+        url: {
+            "url": url,
+            "content_type": content_type,
+            "isopendir": isopendir,
+            "opendir_pattern": pat,
+            "visited": True,
+            "words": words,
+            "min_webcontent": min_webcontent,
+            "raw_webcontent": raw_webcontent,
+            "source": 'get_page_async',
+            "parent_host": parent_host
+        }
+    })
     results["crawledcontent"].update(page_data["crawledcontent"])
     results["crawledlinks"].update(page_data["crawledlinks"])
     await browser.close()
@@ -3192,7 +3267,6 @@ async def main():
             print(f"Instance {instance}: Running full crawler.")
             await crawler(db)
     db.close()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
