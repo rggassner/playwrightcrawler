@@ -78,6 +78,7 @@ content_type_octetstream = [
 content_type_html_regex = [
         r"^text/html$",
         r"^application/html$",
+        r"^application/x-php$",
         r"^text/html,text/html",
         r"^text/fragment\+html$",
         r"^text/html, charset=.*",
@@ -85,6 +86,7 @@ content_type_html_regex = [
         r"^application/xhtml\+xml$",
         r"^text/html,charset=UTF-8$",
         r"^text/vnd\.reddit\.partial\+html$",
+        r"^text/htmltext/html;charset=utf-8$",
     ]
 
 content_type_plain_text_regex = [
@@ -278,6 +280,7 @@ content_type_image_regex = [
         r"^image/x-coreldraw$",
         r"^image/x-cmu-raster$",
         r"^image/vnd\.wap\.wbmp$",
+        r"^text/plain,image/avif$",
         r"^image/x\.fb\.keyframes$",
         r"^image/vnd\.microsoft\.icon$",
         r"^image/vnd\.adobe\.photoshop$",
@@ -366,6 +369,7 @@ content_type_pdf_regex = [
         r"^application/\.pdf$",
         r"^application/x-pdf$",
         r"^application/pdfcontent-length:",
+        r"^application/pdf,",
     ]
 
 content_type_doc_regex = [
@@ -376,14 +380,21 @@ content_type_doc_regex = [
         r"^application/msword$",
         r"^application/msexcel$",
         r"^application/ms-excel$",
+        r"^application/x-msword$",
         r"^application/x-msexcel$",
         r"^application/vnd\.visio$",
+        r"^application/vnd\.ms-word$",
         r"^application/vnd\.ms-excel$",
+        r"^application/vnd\.ms-officetheme$",
         r"^application/vnd\.ms-visio\.drawing$",
         r"^application/vnd\.ms-word\.document\.12$",
         r"^application/vnd\.ms-excel\.openxmlformat$",
         r"^application/vnd\.oasis\.opendocument\.text$",
+        r"^application/vnd\.oasis\.opendocument\.spreadsheet$",
+        r"^application/vnd\.oasis\.opendocument\.presentation$",
         r"^application/vnd\.ms-excel\.sheet\.macroenabled\.12$",
+        r"^application/vnd\.openxmlformats-officedocument\.spre$",
+        r"^application/vnd\.oasis\.opendocument\.formula-template$",
         r"^application/vnd\.ms-powerpoint\.slideshow\.macroEnabled\.12$",
         r"^application/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet$",
         r"^application/vnd\.openxmlformats-officedocument\.presentationml\.slideshow",
@@ -535,10 +546,12 @@ content_type_all_others_regex = [
         r"^application/x-cbr$",
         r"^text/plaincharset:",
         r"^chemical/x-cerius$",
+        r"^text/css,text/css$",
         r"^application/x-rpm$",
         r"^application/x-twb$",
         r"^application/x-xcf$",
         r"^application/x-msi$",
+        r"^application/plain$",
         r"^application/x-xar$",
         r"^application/proto$",
         r"^model/gltf-binary$",
@@ -573,7 +586,6 @@ content_type_all_others_regex = [
         r"^application/rdf\+xml$",
         r"^application/download$",
         r"^application/rss\+xml$",
-        r"^application/x-msword$",
         r"^application/pgp-keys$",
         r"^application/x-subrip$",
         r"^application/x-bibtex$",
@@ -592,6 +604,7 @@ content_type_all_others_regex = [
         r"^application/pkix-cert$",
         r"^application/smil\+xml$",
         r"^text/javascript=UTF-8$",
+        r"^application/csp-report$",
         r"^application/x-zmachine$",
         r"^application/typescript$",
         r"^application/x-director$",
@@ -619,7 +632,6 @@ content_type_all_others_regex = [
         r"^application/java-archive$",
         r"^application/x-javascript$",
         r"^application/x-msdownload$",
-        r"^application/vnd\.ms-word$",
         r"^application/x-executable$",
         r"^application/marcxml\+xml$",
         r"^javascript charset=UTF-8$",
@@ -660,7 +672,6 @@ content_type_all_others_regex = [
         r"^application/sparql-results\+xml$",
         r"^application/vnd\.openxmlformats$",
         r"^application/apple\.vnd\.mpegurl$",
-        r"^application/vnd\.ms-officetheme$",
         r"^application/vnd\.wv\.csp\+wbxml$",
         r"^application/x-ms-dos-executable$",
         r"^application/vnd\.geogebra\.file$",
@@ -685,10 +696,7 @@ content_type_all_others_regex = [
         r"^application/javascript,application/javascript$",
         r"^application/javascriptapplication/x-javascript$",
         r"^application/javascript,application/x-javascript$",
-        r"^application/vnd\.oasis\.opendocument\.spreadsheet$",
-        r"^application/vnd\.oasis\.opendocument\.presentation$",
-        r"^application/vnd\.openxmlformats-officedocument\.spre$",
-        r"^application/vnd\.oasis\.opendocument\.formula-template$",
+        r"^application/vnd\.oracle\.adf\.resourceitem\+json$",
     ]
 
 """Extend regex lists with octet-stream types if enabled."""
@@ -746,6 +754,7 @@ EXTENSION_MAP = {
         ".vsd": content_type_doc_regex,
         ".xls": content_type_doc_regex,
         ".xlsx": content_type_doc_regex,
+        ".otf": content_type_doc_regex,
         ".ttf": content_type_font_regex,
         ".otf": content_type_font_regex,
         ".pfb": content_type_font_regex,
@@ -800,6 +809,49 @@ def db_create_monthly_indexes(db=None):
 
     return urls_index, content_index
 
+def get_urls_by_random_host_prefix(db, size=RANDOM_SITES_QUEUE):
+    """
+    Pick a random character, collect one random URL per host
+    whose hostname starts with that character.
+    """
+    urls_index = f"{LINKS_INDEX}-*"
+    host_to_url = {}
+
+    # Step 1: pick a random starting char (a-z, 0-9)
+    chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    chosen_char = random.choice(chars)
+    print(f"[CHAR PICK] Filtering hosts starting with '{chosen_char}'")
+
+    # Step 2: scan ES
+    query = {"query": {"match_all": {}}}
+    for doc in helpers.scan(db.es, index=urls_index, query=query):
+        url = doc["_source"].get("url")
+        if not url:
+            continue
+        host = urlsplit(url).hostname
+        if not host:
+            continue
+
+        # Filter hosts by chosen char
+        if not host.lower().startswith(chosen_char):
+            continue
+
+        # Reservoir sampling to keep one URL per host
+        if host not in host_to_url:
+            host_to_url[host] = url
+        else:
+            if random.random() < 0.5:
+                host_to_url[host] = url
+
+    # Step 3: shuffle and cut
+    all_urls = list(host_to_url.values())
+    random.shuffle(all_urls)
+
+    if len(all_urls) > size:
+        all_urls = all_urls[:size]
+
+    return all_urls
+
 
 def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
     urls_index = f"{LINKS_INDEX}-*"
@@ -828,6 +880,88 @@ def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
     if len(all_urls) > size:
         all_urls = all_urls[:size]  # already shuffled, so this is a random cut
 
+    return all_urls
+
+def get_urls_from_least_populated_hosts(db, size=RANDOM_SITES_QUEUE):
+    es = db.es
+    urls_index = f"{LINKS_INDEX}-*"
+
+    # Step 1: Aggregate by host with min_doc_count = 1
+    aggs_query = {
+        "size": 0,
+        "aggs": {
+            "by_host": {
+                "terms": {
+                    "field": "host.keyword",
+                    "size": size * 5,  # fetch more buckets to sample from
+                    "order": {"_count": "asc"}  # fewest URLs first
+                }
+            }
+        }
+    }
+
+    agg_result = es.search(index=urls_index, body=aggs_query)
+    buckets = agg_result["aggregations"]["by_host"]["buckets"]
+
+    host_to_url = {}
+
+    # Step 2: For each low-populated host, get one URL
+    for bucket in buckets:
+        host = bucket["key"]
+
+        query = {
+            "size": 1,
+            "query": {"term": {"host.keyword": host}},
+            "_source": ["url"]
+        }
+        hit = es.search(index=urls_index, body=query)["hits"]["hits"]
+        if hit:
+            url = hit[0]["_source"]["url"]
+            host_to_url[host] = url
+
+        if len(host_to_url) >= size:
+            break
+
+    # Step 3: Shuffle result to avoid bias
+    all_urls = list(host_to_url.values())
+    random.shuffle(all_urls)
+
+    return all_urls
+
+def get_oldest_host_domains(db, size=RANDOM_SITES_QUEUE):
+    urls_index = f"{LINKS_INDEX}-*"
+    host_to_url = {}
+
+    # Sort ascending by _id (or replace with "@timestamp" if you have it)
+    query = {
+        "size": 10000,  # batch size
+        "query": {"match_all": {}},
+        "sort": [
+          {"created_at": {"order": "asc"}}
+        ],
+        "_source": ["url"]
+    }
+
+    es = db.es
+    response = es.search(index=urls_index, body=query)
+
+    for hit in response["hits"]["hits"]:
+        url = hit["_source"].get("url")
+        if not url:
+            continue
+        host = urlsplit(url).hostname
+        if not host:
+            continue
+
+        # Keep the *first* URL we encounter per host (since sorted oldest first)
+        if host not in host_to_url:
+            host_to_url[host] = url
+
+        # Break early if enough collected
+        if len(host_to_url) >= size:
+            break
+
+    all_urls = list(host_to_url.values())
     return all_urls
 
 
@@ -861,6 +995,8 @@ class DatabaseConnection:
 
     def commit(self):
         pass
+
+
 
     def search(self, *args, **kwargs):
         return self.es.search(*args, **kwargs)
@@ -1042,9 +1178,6 @@ def preprocess_crawler_data(data: dict) -> dict:
     }
 
 
-
-
-
 def get_directory_levels(url_path):
     # Split the URL path into parts and remove empty strings
     levels = [p for p in url_path.strip("/").split("/") if p]
@@ -1060,7 +1193,6 @@ def get_directory_levels(url_path):
         "directory_levels": levels,
         "directory_level_map": directory_level_map
     }
-
 
 
 def function_for_url(regexp_list):
@@ -1139,10 +1271,10 @@ def sanitize_url(
     if skip_log_tags is None:
         skip_log_tags = set()
 
-    def log_change(reason, before, after):
-        if before != after and reason not in skip_log_tags and debug:
-            print(f"\033[91m[{reason}] URL sanitized \
-                  from -{before}- to -{after}-\033[00m")
+    #def log_change(reason, before, after):
+    #    if before != after and reason not in skip_log_tags and debug:
+    #        print(f"\033[91m[{reason}] URL sanitized \
+    #              from -{before}- to -{after}-\033[00m")
 
     def clean_hostname_with_userinfo(netloc, scheme):
         """
@@ -1201,7 +1333,7 @@ def sanitize_url(
         return ""
 
     url = url.strip()
-    log_change("STRIP_WHITESPACE", pre_sanitize, url)
+    #log_change("STRIP_WHITESPACE", pre_sanitize, url)
     pre_sanitize = url
     special_quote_pairs = [
         (r'^"(.*)"$', r'\1'),
@@ -1212,7 +1344,7 @@ def sanitize_url(
     ]
     for pattern, replacement in special_quote_pairs:
         cleaned = re.sub(pattern, replacement, url)
-        log_change("SPECIAL_QUOTE_CLEAN", url, cleaned)
+        #log_change("SPECIAL_QUOTE_CLEAN", url, cleaned)
         url = cleaned
 
     scheme_fixes = [
@@ -1236,18 +1368,18 @@ def sanitize_url(
     ]
     for pattern, replacement in scheme_fixes:
         fixed = re.sub(pattern, replacement, url)
-        log_change("FIX_SCHEME", url, fixed)
+        #log_change("FIX_SCHEME", url, fixed)
         url = fixed
 
     cleaned = re.sub(r'^[a-zA-Z."(´]https://', 'https://', url)
-    log_change("PREFIX_CLEAN_HTTPS", url, cleaned)
+    #log_change("PREFIX_CLEAN_HTTPS", url, cleaned)
     url = cleaned
     cleaned = re.sub(r'^[a-zA-Z."(´]http://', 'http://', url)
-    log_change("PREFIX_CLEAN_HTTP", url, cleaned)
+    #log_change("PREFIX_CLEAN_HTTP", url, cleaned)
     url = cleaned
 
     url = re.sub(r'^(https?:)/+', r'\1//', url)
-    log_change("FIX_SCHEME_SLASHES", pre_sanitize, url)
+    #log_change("FIX_SCHEME_SLASHES", pre_sanitize, url)
     try:
         parsed = urlsplit(url)
         scheme = parsed.scheme.lower()
@@ -1264,7 +1396,7 @@ def sanitize_url(
                          path,
                          parsed.query,
                          parsed.fragment))
-                log_change("FIX_NETLOC_IN_PATH", url, rebuilt)
+                #log_change("FIX_NETLOC_IN_PATH", url, rebuilt)
                 url = rebuilt
         else:
             path = re.sub(r'/{2,}', '/', parsed.path)
@@ -1274,11 +1406,11 @@ def sanitize_url(
                      path,
                      parsed.query,
                      parsed.fragment))
-            log_change("NORMALIZE_PATH_SLASHES", url, rebuilt)
+            #log_change("NORMALIZE_PATH_SLASHES", url, rebuilt)
             url = rebuilt
     except Exception:
         fallback = re.sub(r'(https?://[^/]+)/{2,}', r'\1/', url)
-        log_change("FALLBACK_SLASH_FIX", url, fallback)
+        #log_change("FALLBACK_SLASH_FIX", url, fallback)
         url = fallback
 
     try:
@@ -1296,7 +1428,7 @@ def sanitize_url(
 
         path = safe_normalize_path_slashes(parsed.path)
         normalized = urlunsplit((scheme, netloc, path, parsed.query, ''))
-        log_change("FINAL_NORMALIZE", url, normalized)
+        #log_change("FINAL_NORMALIZE", url, normalized)
         return normalized.strip()
     except Exception:
         return url.strip()
@@ -1321,7 +1453,7 @@ async def get_links_page(page, base_url: str) -> list[str]:
             # Filter only strings
             return [v for v in values if isinstance(v, str)]
         except Exception as e:
-            print(f"[WARN] Could not extract <{tag_name}> from {base_url}: {e}")
+            #print(f"[WARN] Could not extract <{tag_name}> from {base_url}: {e}")
             return []
 
     # Extract all sources safely
@@ -1442,7 +1574,8 @@ async def content_type_fonts(args):
 
 
             if EXTENSION_MAP.get(ext) is not content_type_font_regex:
-                print(f"[SKIP FONT] Extension '{ext}' not mapped to font regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP FONT] Extension '{ext}' not mapped to font regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -1532,7 +1665,8 @@ async def content_type_videos(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_video_regex:
-                print(f"[SKIP VIDEO] Extension '{ext}' not mapped to video regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP VIDEO] Extension '{ext}' not mapped to video regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -1590,6 +1724,12 @@ async def content_type_videos(args):
         }
     }
 
+def is_octetstream(content_type: str) -> bool:
+    for pattern in content_type_octetstream:
+        if re.match(pattern, content_type, re.IGNORECASE):
+            return True
+    return False
+
 @function_for_content_type(content_type_midi_regex)
 async def content_type_midis(args):
     url = args.get("url")
@@ -1624,7 +1764,8 @@ async def content_type_midis(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_midi_regex:
-                print(f"[SKIP MIDI] Extension '{ext}' not mapped to midi regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP MIDI] Extension '{ext}' not mapped to midi regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -1715,7 +1856,8 @@ async def content_type_audios(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_audio_regex:
-                print(f"[SKIP AUDIO] Extension '{ext}' not mapped to audio regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP AUDIO] Extension '{ext}' not mapped to audio regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -1806,7 +1948,8 @@ async def content_type_pdfs(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_pdf_regex:
-                print(f"[SKIP PDF] Extension '{ext}' not mapped to pdf regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP PDF] Extension '{ext}' not mapped to pdf regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -1898,7 +2041,8 @@ async def content_type_docs(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_doc_regex:
-                print(f"[SKIP DOC] Extension '{ext}' not mapped to doc regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP DOC] Extension '{ext}' not mapped to doc regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -1989,7 +2133,8 @@ async def content_type_databases(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_database_regex:
-                print(f"[SKIP DATABASE] Extension '{ext}' not mapped to database regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP DATABASE] Extension '{ext}' not mapped to database regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -2081,7 +2226,8 @@ async def content_type_torrents(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_torrent_regex:
-                print(f"[SKIP TORRENT] Extension '{ext}' not mapped to torrent regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP TORRENT] Extension '{ext}' not mapped to torrent regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -2172,7 +2318,8 @@ async def content_type_compresseds(args):
             name_part, ext = os.path.splitext(decoded_name)
 
             if EXTENSION_MAP.get(ext) is not content_type_compressed_regex:
-                print(f"[SKIP COMPRESSED] Extension '{ext}' not mapped to compressed regex ({content_type}). URL={url}")
+                if not is_octetstream(content_type):
+                    print(f"\033[94m[SKIP COMPRESSED] Extension '{ext}' not mapped to compressed regex ({content_type}). URL={url}\033[0m")
                 return {}
 
             # Sanitize
@@ -2389,7 +2536,7 @@ def remove_invalid_urls(db):
 
         print(f"Deleting invalid URLs from {label}")
 
-        for doc in helpers.scan(db.es, index=index_pattern, query=query):
+        for doc in helpers.scan(db.es, index=index_pattern, query=query, size=1000, scroll="5m" ):
             url = doc["_source"].get("url")
             if not url:
                 continue
@@ -2738,7 +2885,7 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
             "fewest_urls":  1,
             "oldest":       1,
             "host_prefix":  1,
-            "random":       100
+            "random":       1
         }
     else:
         method_weights = METHOD_WEIGHTS
@@ -2757,9 +2904,9 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
 
     # Set up method mapping
     method_functions = {
-        "fewest_urls": lambda: get_least_covered_random_hosts(db, size=size),
-        "oldest": lambda: get_oldest_unvisited_urls_from_bucket(db, size=size),
-        "host_prefix": lambda: get_urls_by_random_bucket_and_host_prefix(db, size=size),
+        "fewest_urls": lambda: get_urls_from_least_populated_hosts(db, size=size),
+        "oldest": lambda: get_oldest_host_domains(db, size=size),
+        "host_prefix": lambda: get_urls_by_random_host_prefix(db, size=size),
         "random": lambda: get_random_host_domains(db, size=size)
     }
 
@@ -2849,17 +2996,28 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     for extension, content_type_patterns in shuffled_extensions:
         await asyncio.sleep(FAST_DELAY)
         print(f"[FAST CRAWLER] Extension: {extension}")
-
-        # Search all unvisited URLs matching the extension
-        query = {
-            "bool": {
-                "must": [
-                    {"term": {"visited": False}},
-                    {"wildcard": {"url": f"*{extension}"}}
-                ]
+        xtension=extension[1:]
+        query=""
+        if STRICT_EXTENSION_QUERY:
+            query = {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "url.keyword": f".*\\/\\/.*\\/.*\\.{xtension}"                                
+                            }
+                        }
+                    ]
+                }
             }
-        }
-
+        else:
+            query = {
+                "bool": {
+                    "must": [
+                        {"wildcard": {"url": f"*{extension}"}}
+                    ]
+                }
+            }
         try:
             # Scroll through all matching URLs in batches
             scroll_size = 5000
@@ -2953,7 +3111,7 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
     content_type = content_type.lower().split(";")[0].strip()
     if not any(re.match(pattern, content_type) for pattern in content_type_patterns):
         if content_type not in ['text/html','text/plain','application/json','text/javascript']:
-            print(f"[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-")
+            print(f"\033[92m[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-\033[0m")
         async with async_playwright() as playwright:
             await get_page(url, playwright, db)
         return
@@ -3009,7 +3167,7 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
                 break
 
         if not found:
-            print(f"[FAST CRAWLER] UNKNOWN type -{url}- -{content_type}-")
+            print(f"\033[91m[FAST CRAWLER] UNKNOWN type -{url}- -{content_type}-\033[0m")
 
     except Exception as e:
         #print(f"[FAST CRAWLER] Error processing {url}: {e}")
@@ -3156,7 +3314,7 @@ async def get_page_async(url: str, playwright):
                             pass
                             #print(f"[WARNING] Handler failed for {rurl}: {e}")
                 if not found:
-                    print(f"UNKNOWN type -{rurl}- -{ctype}-")
+                    print(f"\033[91mUNKNOWN type -{rurl}- -{ctype}-\033[0m")
 
         except Exception as e:
             print(f"Error handling response: {e}")
