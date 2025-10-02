@@ -1,73 +1,50 @@
 
-# --------------------------
-# --- Blocks and removes ---
-# --------------------------
+# -------------------------------------------
+# Elasticsearch configuration
+# -------------------------------------------
 
-# This option only makes sense to be activated when you have an external
-# script packing data to database, since all crawler data is already
-# filtered while urls are entering.
-REMOVE_INVALID_URLS = True
-    
-# If urls that are blocked based on host should be removed from the database.
-REMOVE_BLOCKED_HOSTS = True
-    
-# If urls that are blocked based on path should be deleted from the database.
-REMOVE_BLOCKED_URLS = True
+# The hostname or IP address of the Elasticsearch server
+ELASTICSEARCH_HOST = '192.168.15.71'
 
-# Do not crawl these domains.
-HOST_REGEX_BLOCK_LIST = [
-    r'localhost:4443$',
-    r'(^|\.)spotify\.com$',
-    r'(^|\.)google$',
-    r'(^|\.)google\.com$',
-    r'(^|\.)gstatic\.com$',
-    r'(^|\.)google\.dev$',
-    r'(^|\.)apache\.org$',
-    r'(^|\.)youtube\.com$',
-    r'(^|\.)archive\.org$',
-    r'(^|\.)booking\.com$',
-    r'(^|\.)haproxy\.org$',
-    r'(^|\.)adthrive\.com$',
-    r'(^|\.)google\.com\.br$',
-    r'(^|\.)googleapis\.com$',
-    r'(^|\.)doubleclick\.net$',
-    r'(^|\.)doubleverify\.com$',
-    r'(^|\.)docs\.oracle\.com$',
-    r'(^|\.)rubiconproject\.com$',
-    r'(^|\.)amazon-adsystem\.com$',
-    r'(^|\.)google-analytics\.com$',
-    r'(^|\.)googletagmanager\.com$',
-    r'(^|\.)googleadservices\.com$',
-    r'(^|\.)syndicatedsearch\.goog$',
-    r'(^|\.)googlesyndication\.com$',
-    r'(^|\.)microsoftonline\.com$',
-    r'(^|\.)softonic.*$',
-]
+# The port Elasticsearch is listening on (typically 9200 for HTTP/HTTPS)
+ELASTICSEARCH_PORT = 9200
 
-# Only crawl domains that match this regex
-HOST_REGEX_ALLOW_LIST = [r'.*']
+# Username for basic authentication
+ELASTICSEARCH_USER = 'elastic'
 
-# Do not crawl urls that match any of these regexes
-URL_REGEX_BLOCK_LIST = [
-    '/noticias/modules/noticias/modules/',
-    '/images/images/images/images/',
-    '/plugins/owlcarousel/plugins/',
-]
+# Password for basic authentication
+ELASTICSEARCH_PASSWORD = 'yourpassword'
 
-# --------------------
-# --- Fast crawler ---
-# --------------------
+# Optional path to a CA certificate file for verifying the server's TLS cert
+# Set to None to skip custom CA verification (not recommended in production)
+ELASTICSEARCH_CA_CERT_PATH = None
 
-# Delay between fast buckets. Used to decrease the elastic search access.
-FAST_DELAY = 2
+# Timeout in seconds for each request to Elasticsearch
+# Useful when dealing with long-running queries or slow networks
+ELASTICSEARCH_TIMEOUT = 300
 
-# When working with only one worker and if you want to avoid WAFs
-FAST_RANDOM_MIN_WAIT = 0
-FAST_RANDOM_MAX_WAIT = 0
+# Whether to retry the request if it times out
+# Helps improve resilience in the face of network hiccups or brief server issues
+ELASTICSEARCH_RETRY = True
 
-MAX_FAST_WORKERS = 2
+# Total number of retry attempts if a request fails or times out
+# Applies when ELASTICSEARCH_RETRY is True
+ELASTICSEARCH_RETRIES = 5
 
-USE_OCTET_STREAM = True
+# Whether to enable HTTP compression for request/response bodies
+# Can reduce bandwidth usage, but adds CPU cost — usually safe to enable
+ELASTICSEARCH_HTTP_COMPRESS = False
+
+# Whether to verify the server’s SSL certificate
+# Should be True in production; set to False only in dev or when using self-signed certs
+ELASTICSEARCH_VERIFY_CERTS = False
+
+# Name of the index where crawled data will be stored
+CONTENT_INDEX = 'crawler-content'
+
+#Name of the index where links are going to be stored
+LINKS_INDEX = 'crawler-links'
+
 
 # --------------------
 # --- What to keep ---
@@ -122,7 +99,7 @@ TORRENTS_FOLDER = 'torrents'
 DOWNLOAD_COMPRESSEDS = False
 COMPRESSEDS_FOLDER = 'compresseds'
 
-
+#When decomposing directories and host name domains, how many levels should be stored
 MAX_DIR_LEVELS = 7
 MAX_HOST_LEVELS = 7
 
@@ -150,12 +127,12 @@ HUNT_OPEN_DIRECTORIES = True
 INPUT_DIR = 'input_url_files' 
 
 ITERATIONS = 10000
-RANDOM_SITES_QUEUE = 1000
+RANDOM_SITES_QUEUE = 10000
 
 METHOD_WEIGHTS = {
-    "fewest_urls":  1,
-    "oldest":       1,
-    "host_prefix":  1,
+    "fewest_urls":  10000,
+    "oldest":       10000,
+    "host_prefix":  100000,
     "random":       100000
 }
 
@@ -172,53 +149,54 @@ SCROLL_ATTEMPTS = 5
 #Delay between scrolls
 SCROLL_DELAY = 1.0
 
-# -------------------------------------------
-# Elasticsearch configuration
-# -------------------------------------------
 
-# The hostname or IP address of the Elasticsearch server
-ELASTICSEARCH_HOST = '192.168.15.71'
+# --------------------
+# --- Fast crawler ---
+# --------------------
 
-# The port Elasticsearch is listening on (typically 9200 for HTTP/HTTPS)
-ELASTICSEARCH_PORT = 9200
+# Delay between fast buckets. Used to decrease the elastic search access.
+FAST_DELAY = 2
 
-# Username for basic authentication
-ELASTICSEARCH_USER = 'elastic'
+# When working with only one worker and if you want to avoid WAFs
+FAST_RANDOM_MIN_WAIT = 0
+FAST_RANDOM_MAX_WAIT = 0
 
-# Password for basic authentication
-ELASTICSEARCH_PASSWORD = 'yourpassword'
+MAX_FAST_WORKERS = 4
 
-# Optional path to a CA certificate file for verifying the server's TLS cert
-# Set to None to skip custom CA verification (not recommended in production)
-ELASTICSEARCH_CA_CERT_PATH = None
+USE_OCTET_STREAM = True
 
-# Timeout in seconds for each request to Elasticsearch
-# Useful when dealing with long-running queries or slow networks
-ELASTICSEARCH_TIMEOUT = 300
+STRICT_EXTENSION_QUERY = True
 
-# Whether to retry the request if it times out
-# Helps improve resilience in the face of network hiccups or brief server issues
-ELASTICSEARCH_RETRY = True
+# --------------------------
+# --- Blocks and removes ---
+# --------------------------
 
-# Total number of retry attempts if a request fails or times out
-# Applies when ELASTICSEARCH_RETRY is True
-ELASTICSEARCH_RETRIES = 5
+# This option only makes sense to be activated when you have an external
+# script packing data to database, since all crawler data is already
+# filtered while urls are entering.
+REMOVE_INVALID_URLS = True
+    
+# If urls that are blocked based on host should be removed from the database.
+REMOVE_BLOCKED_HOSTS = True
+    
+# If urls that are blocked based on path should be deleted from the database.
+REMOVE_BLOCKED_URLS = True
 
-# Whether to enable HTTP compression for request/response bodies
-# Can reduce bandwidth usage, but adds CPU cost — usually safe to enable
-ELASTICSEARCH_HTTP_COMPRESS = False
+# Do not crawl these domains.
+HOST_REGEX_BLOCK_LIST = [
+    r'(^|\.)gstatic\.com$',
+]
 
-# Whether to verify the server’s SSL certificate
-# Should be True in production; set to False only in dev or when using self-signed certs
-ELASTICSEARCH_VERIFY_CERTS = False
+# Only crawl domains that match this regex
+HOST_REGEX_ALLOW_LIST = [r'.*']
 
+# Do not crawl urls that match any of these regexes
+URL_REGEX_BLOCK_LIST = [
+    '/noticias/modules/noticias/modules/',
+    '/images/images/images/images/',
+    '/plugins/owlcarousel/plugins/',
+]
 
-# In order to avoid multiple workers on the same url
-ELASTICSEARCH_RANDOM_BUCKETS = 20
-
-# Name of the indexes where data will be stored
-CONTENT_INDEX = 'crawler-content'
-LINKS_INDEX = 'crawler-links'
 
 URLS_MAPPING = {
     "mappings": {
