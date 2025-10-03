@@ -4,6 +4,7 @@ import re
 import os
 import json
 import time
+import httpx
 import fcntl
 import random
 import chardet
@@ -35,6 +36,7 @@ from elasticsearch import Elasticsearch
 from elasticsearch import exceptions as es_exceptions
 from elasticsearch.exceptions import NotFoundError, RequestError
 from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 
 
@@ -64,10 +66,12 @@ content_type_octetstream = [
         r"^text/octet$",
         r"^octet/stream$",
         r"^binary/octet-stream$",
+        r"^application/download$",
         r"^application/octetstream$",
         r"^application/octet-stream$",
-        r"^application/x-octet-stream$"
+        r"^application/x-octet-stream$",
         r"^x-application/octet-stream$",
+        r"^application/force-download$",
         r"^application/octet-stream,text/html$",
         r"^application/octet-stream,atext/plain$",
         r"^application/octet-streamCharset=UTF-8$",
@@ -80,6 +84,7 @@ content_type_html_regex = [
         r"^application/html$",
         r"^application/x-php$",
         r"^text/html,text/html",
+        r"^text/htmltext/html$",
         r"^text/fragment\+html$",
         r"^text/html, charset=.*",
         r"^text/x-html-fragment$",
@@ -244,6 +249,7 @@ content_type_image_regex = [
         r"^image/$",
         r"^image$",
         r"^img/jpeg$",
+        r"^img/png$",
         r"^image/\*$",
         r"^image/any$",
         r"^image/bmp$",
@@ -279,8 +285,11 @@ content_type_image_regex = [
         r"^image/x-photoshop$",
         r"^image/x-coreldraw$",
         r"^image/x-cmu-raster$",
+        r"^image/x-win-bitmap$",
         r"^image/vnd\.wap\.wbmp$",
+        r"^image/png,image/jpeg$",
         r"^text/plain,image/avif$",
+        r"^image/png, image/jpeg$",
         r"^image/x\.fb\.keyframes$",
         r"^image/vnd\.microsoft\.icon$",
         r"^image/vnd\.adobe\.photoshop$",
@@ -322,6 +331,7 @@ content_type_audio_regex = [
         r"^audio/prs\.sid$",
         r"^audio/mp4a-latm$",
         r"^application/mp3$",
+        r"^application/ogg$",
         r"^audio/x-mpegurl$",
         r"^application/mp4$",
         r"^audio/x-oggvorbis$",
@@ -365,11 +375,12 @@ content_type_video_regex = [
 
 content_type_pdf_regex = [
         r"^adobe/pdf$",
+        r"^image/pdf$",
         r"^application/pdf$",
         r"^application/\.pdf$",
         r"^application/x-pdf$",
         r"^application/pdfcontent-length:",
-        r"^application/pdf,",
+        r"^application/x-www-form-urlencoded,",
     ]
 
 content_type_doc_regex = [
@@ -392,6 +403,7 @@ content_type_doc_regex = [
         r"^application/vnd\.oasis\.opendocument\.text$",
         r"^application/vnd\.oasis\.opendocument\.spreadsheet$",
         r"^application/vnd\.oasis\.opendocument\.presentation$",
+        r"^application/vnd\.oasis\.opendocument\.formula-template$",
         r"^application/vnd\.ms-excel\.sheet\.macroenabled\.12$",
         r"^application/vnd\.openxmlformats-officedocument\.spre$",
         r"^application/vnd\.oasis\.opendocument\.formula-template$",
@@ -584,7 +596,6 @@ content_type_all_others_regex = [
         r"^application/x-adrift$",
         r"^application/x-binary$",
         r"^application/rdf\+xml$",
-        r"^application/download$",
         r"^application/rss\+xml$",
         r"^application/pgp-keys$",
         r"^application/x-subrip$",
@@ -642,7 +653,6 @@ content_type_all_others_regex = [
         r"^application/x-ms-manifest$",
         r"^application/x-mobi8-ebook$",
         r"^application/grpc-web-text$",
-        r"^application/force-download$",
         r"^application/vnd\.visionary$",
         r"^application/x-java-archive$",
         r"^application/x-x509-ca-cert$",
@@ -763,6 +773,7 @@ EXTENSION_MAP = {
         ".TTF": content_type_font_regex,
         ".woff": content_type_font_regex,
         ".woff2": content_type_font_regex,
+        ".cur": content_type_image_regex,
         ".fits": content_type_image_regex,
         ".gif": content_type_image_regex,
         ".HEIC": content_type_image_regex,
@@ -1070,7 +1081,7 @@ class DatabaseConnection:
 
 
 def create_directories():
-    dirs = ["images", "images/sfw", "images/nsfw", "fonts", "videos", "input_url_files", "midis", "audios", "pdfs", "docs", "databases", "torrents", "compresseds"]
+    dirs = [IMAGES_FOLDER, NSFW_FOLDER, SFW_FOLDER , FONTS_FOLDER, VIDEOS_FOLDER,  MIDIS_FOLDER , AUDIOS_FOLDER, PDFS_FOLDER ,DOCS_FOLDER , DATABASES_FOLDER, TORRENTS_FOLDER,COMPRESSEDS_FOLDER , INPUT_FOLDER]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
 
@@ -1096,19 +1107,26 @@ def preprocess_crawler_data(data: dict) -> dict:
     filtered_links = {}
     new_crawledcontent = {}
 
+    if HUNT_OPEN_DIRECTORIES:
+        for url, doc in crawledcontent.items():
+            crawledlinks.update(set(get_directory_tree(url)))
+        for url in crawledlinks.copy():
+            crawledlinks.update(set(get_directory_tree(url)))
+
     for url in crawledlinks:
         try:
+            url = sanitize_url(url)
             parts = urlsplit(url)
             host = parts.hostname
             if not host:
-                continue  # skip links without host
+                continue  
             
             # Strip fragment (#whatever)
             normalized_url = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
-            normalized_url = sanitize_url(normalized_url)
             if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(normalized_url):
                 if normalized_url not in crawledcontent:
-                    filtered_links[normalized_url] = host  # store normalized_url -> host
+                    filtered_links[normalized_url] = host 
+
         except Exception as e:
             print(f"[WARN] Failed to normalize {url}: {e}")
             continue    
@@ -1483,6 +1501,7 @@ async def get_words_from_page(page) -> list[str]:
             const body = document.body;
             if (!body) return [];
             const blocklist = new Set(["script", "style", "noscript", "iframe"]);
+            
             function getTextNodes(node) {
                 let texts = [];
                 if (node.nodeType === Node.TEXT_NODE) {
@@ -1505,9 +1524,13 @@ async def get_words_from_page(page) -> list[str]:
         text_parts = await page.evaluate(js)
         if not isinstance(text_parts, list):
             text_parts = []
+        else:
+            # Keep only strings, ignore anything else
+            text_parts = [str(x) for x in text_parts if isinstance(x, str)]
     except Exception as e:
-        #print(f"[WARN] get_words_from_page failed: {e}")
+        # print(f"[WARN] get_words_from_page failed: {e}")
         text_parts = []
+
     combined_text = " ".join(text_parts)
     return extract_top_words_from_text(combined_text)
 
@@ -2377,9 +2400,6 @@ async def content_type_compresseds(args):
     }
 
 
-
-
-
 @function_for_content_type(content_type_html_regex)
 async def content_type_download(args):
     try:
@@ -2467,17 +2487,17 @@ def remove_blocked_urls_from_es_db(db):
 
     print(f"\nDone. Total deleted by path: {total_deleted}")
 
-def process_input_url_files(db):
-    if not os.path.isdir(INPUT_DIR):
+async def process_input_url_files(db):
+    if not os.path.isdir(INPUT_FOLDER):
         return
 
     while True:
-        files = [f for f in os.listdir(INPUT_DIR) if os.path.isfile(os.path.join(INPUT_DIR, f))]
+        files = [f for f in os.listdir(INPUT_FOLDER) if os.path.isfile(os.path.join(INPUT_FOLDER, f))]
         if not files:
             print("No more input files to process.")
             break
 
-        file_to_process = os.path.join(INPUT_DIR, random.choice(files))
+        file_to_process = os.path.join(INPUT_FOLDER, random.choice(files))
         print(f"Processing input file: {file_to_process}")
 
         try:
@@ -2507,18 +2527,16 @@ def process_input_url_files(db):
         urls_to_process = lines[:MAX_URLS_FROM_FILE]
         remaining = lines[MAX_URLS_FROM_FILE:]
 
-        driver = initialize_driver()
         for url in urls_to_process:
             url = url.strip()
             if not url:
                 continue
             try:
                 print('    [FILE] {}'.format(url))
-                del driver.requests
-                get_page(url, driver, db)
+                async with async_playwright() as playwright:
+                    await get_page(url, playwright, db)
             except Exception as e:
                 print(f"Error crawling {url}: {e}")
-        driver.quit()
 
         # Rewrite file with remaining lines
         if remaining:
@@ -3185,7 +3203,6 @@ def is_html_content(content_type: str) -> bool:
 
 # --- main function ---
 
-
 async def get_page_async(url: str, playwright):
     browser = await playwright.chromium.launch(headless=True)
     user_agent = ua.random
@@ -3215,74 +3232,63 @@ async def get_page_async(url: str, playwright):
                 await page.wait_for_load_state("networkidle")
 
             return ctype
-        except PlaywrightError as e:
-            msg = str(e)
-            if "net::ERR_ABORTED" in msg:
-                #print(f"[IGNORED] Navigation aborted for {url}: {msg}")        
-                pass
-        except PlaywrightTimeoutError:
-            print(f"Timeout fetching {url}, scroll={scroll}")
-            return None
         except Exception as e:
-            print(f"Error fetching {url}: {e}")
+            #print(f"Playwright fetch error for {url}: {e}")
             return None
 
+    # --- Playwright attempt ---
     content_type = await crawl(scroll=False)
     if content_type is None:
-        #print(f"Retrying {url} with scrolling...")
         content_type = await crawl(scroll=True)
-
     content_type = content_type or ""
 
-    # Safe DOM snapshot and links
-    html_text = await safe_content(page)
-    links = await get_links_page(page, url)
+    # --- Fallback to httpx if content_type is still empty ---
+    if not content_type:
+        try:
+            headers = {"User-Agent": user_agent}
+            async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=PAGE_TIMEOUT_MS/1000) as client:
+                resp = await client.get(url, headers=headers)
+                content_type = sanitize_content_type(resp.headers.get("content-type", ""))
+                body_bytes = resp.content  # use for handle_response if needed
+        except Exception as e:
+            #print(f"[HTTPX fallback failed] {url}: {e}")
+            body_bytes = None
+
+    # Safe DOM snapshot and links (only if HTML)
+    html_text = await safe_content(page) if is_html_content(content_type) else ""
+    links = await get_links_page(page, url) if is_html_content(content_type) else set()
     page_data["crawledlinks"].update(links)
 
     # Extract words / raw / min content
-    words = await get_words_from_page(page) if EXTRACT_WORDS else ''
-    raw_webcontent = str(html_text)[:MAX_WEBCONTENT_SIZE] if EXTRACT_RAW_WEBCONTENT else ''
-    min_webcontent = await get_min_webcontent_page(page) if EXTRACT_MIN_WEBCONTENT else ''
+    words = await get_words_from_page(page) if EXTRACT_WORDS and is_html_content(content_type) else ''
+    raw_webcontent = str(html_text)[:MAX_WEBCONTENT_SIZE] if EXTRACT_RAW_WEBCONTENT and is_html_content(content_type) else ''
+    min_webcontent = await get_min_webcontent_page(page) if EXTRACT_MIN_WEBCONTENT and is_html_content(content_type) else ''
     isopendir, pat = is_open_directory(str(html_text), url)
 
-
+    # --- Keep the original response handler ---
     async def handle_response(response):
         try:
             if page.is_closed():
                 return
-
             status = response.status
             rurl = response.url
             host = urlsplit(rurl)[1]
 
-            body_bytes = None
+            body_bytes_local = None
             content = ""
             encoding = "utf-8"
 
-            # Always grab content-type first
             ctype = response.headers.get("content-type")
-
             try:
-                body_bytes = await response.body()   # try fetching raw bytes
-            except PlaywrightError as e:
-                msg = str(e)
-                if (
-                    "No resource with given identifier found" in msg
-                    or "Target page, context or browser has been closed" in msg
-                    or "Response body is unavailable for redirect responses" in msg
-                    or "No data found for resource with given identifier" in msg
-                    or "Request content was evicted from inspector cache" in msg
-                ):
-                    return  # <-- safely skip instead of printing noisy errors
-                else:
-                    print(f"[ERROR] Could not fetch body for {response.url}: {msg}")                
-                    return
+                body_bytes_local = await response.body()
+            except Exception:
+                return
 
-            # Decode only if textual content
-            if body_bytes and ctype and any(t in ctype for t in ["text", "json", "xml"]):
-                encoding = chardet.detect(body_bytes)["encoding"] or "utf-8"
+            # Decode textual content
+            if body_bytes_local and ctype and any(t in ctype for t in ["text", "json", "xml"]):
+                encoding = chardet.detect(body_bytes_local)["encoding"] or "utf-8"
                 try:
-                    content = body_bytes.decode(encoding, errors="replace")
+                    content = body_bytes_local.decode(encoding, errors="replace")
                 except Exception:
                     content = ""
 
@@ -3300,8 +3306,7 @@ async def get_page_async(url: str, playwright):
                     if regex.search(ctype):
                         found = True
                         try:
-                            raw_content = body_bytes if isinstance(body_bytes, (bytes, bytearray)) else None
-
+                            raw_content = body_bytes_local if isinstance(body_bytes_local, (bytes, bytearray)) else None
                             urlresult = await function({
                                 'url': rurl,
                                 'content': content,
@@ -3310,33 +3315,32 @@ async def get_page_async(url: str, playwright):
                                 'parent_host': parent_host
                             })
                             page_data["crawledcontent"].update(urlresult)
-                        except Exception as e:
+                        except Exception:
                             pass
-                            #print(f"[WARNING] Handler failed for {rurl}: {e}")
                 if not found:
                     print(f"\033[91mUNKNOWN type -{rurl}- -{ctype}-\033[0m")
-
         except Exception as e:
             print(f"Error handling response: {e}")
-
 
     handler = lambda response: asyncio.create_task(handle_response(response))
     page.on("response", handler)
 
     try:
         await page.goto(url, wait_until="domcontentloaded")
-    except PlaywrightError as e:
-        msg = str(e)
-        if "net::ERR_ABORTED" in msg:
-            #print(f"[IGNORED] Navigation aborted for {url}: {msg}")        
-            pass
     except Exception as e:
-        print(f"Error while fetching {url}: {e}")
+        #print(f"Error while fetching {url}: {e}")
+        pass
     finally:
         page.remove_listener("response", handler)
         await browser.close()
 
-    #if is_html_content(content_type):
+    found = False
+    for regex, function in content_type_functions:
+        if regex.search(content_type):
+            found = True
+    if not found:
+        print(f"\033[91mUNKNOWN type -{url}- -{content_type}-\033[0m")
+    # Final storage
     page_data["crawledcontent"].update({
         url: {
             "url": url,
@@ -3353,7 +3357,6 @@ async def get_page_async(url: str, playwright):
     })
     results["crawledcontent"].update(page_data["crawledcontent"])
     results["crawledlinks"].update(page_data["crawledlinks"])
-    await browser.close()
 
 
 async def run_initial(db,initial_url: str | None = None):
@@ -3371,15 +3374,14 @@ async def get_page(url, playwright, db):
     results = {"crawledcontent": {}, "crawledlinks": set()}
 
 async def crawler(db):
-    for iteration in range(ITERATIONS):
-        random_urls = get_random_unvisited_domains(db=db)
-        for target_url in random_urls:
-            try:
-                print('    {}'.format(target_url))
-                async with async_playwright() as playwright:
-                    await get_page(target_url, playwright, db)
-            except UnicodeEncodeError:
-                pass
+    random_urls = get_random_unvisited_domains(db=db)
+    for target_url in random_urls:
+        try:
+            print('    {}'.format(target_url))
+            async with async_playwright() as playwright:
+                await get_page(target_url, playwright, db)
+        except UnicodeEncodeError:
+            pass
 
 
 async def main():
@@ -3401,30 +3403,30 @@ async def main():
         initial_url = None if args.initial is True else args.initial
         await run_initial(db,initial_url)
     else:
-        # Normal distributed crawling logic
         instance = get_instance_number()
-        if instance == 1:
-            if REMOVE_BLOCKED_HOSTS:
-                print("Instance 1: Removing urls from hosts that are blocklisted.")
-                remove_blocked_hosts_from_es_db(db)
-            if REMOVE_BLOCKED_URLS:
-                print("Instance 1: Removing path blocklisted urls.")
-                remove_blocked_urls_from_es_db(db)
-            if REMOVE_INVALID_URLS:
-                print("Instance 1: Deleting invalid urls.")
-                remove_invalid_urls(db)
-            print("Instance 1: Checking for input URL files...")
-            process_input_url_files(db)
-            print("Instance 1: Let's go full crawler mode.")
-            await crawler(db)
-        elif instance == 2:
-            print("Instance 2: Running fast extension pass only.")
-            await run_fast_extension_pass(db)
-            await crawler(db)
-        else:
-            print(f"Instance {instance}: Running full crawler.")
-            await crawler(db)
-    db.close()
+        for iteration in range(ITERATIONS):
+            if instance == 1:
+                if REMOVE_BLOCKED_HOSTS:
+                    print(f"Instance {instance}, iteration {iteration}: Removing urls from hosts that are blocklisted.")
+                    remove_blocked_hosts_from_es_db(db)
+                if REMOVE_BLOCKED_URLS:
+                    print(f"Instance {instance}, iteration {iteration}: Removing path blocklisted urls.")
+                    remove_blocked_urls_from_es_db(db)
+                if REMOVE_INVALID_URLS:
+                    print(f"Instance {instance}, iteration {iteration}: Deleting invalid urls.")
+                    remove_invalid_urls(db)
+                print(f"Instance {instance}, iteration {iteration}: Checking for input URL files...")
+                await process_input_url_files(db)
+                print(f"Instance {instance}, iteration {iteration}: Let's go full crawler mode.")
+                await crawler(db)
+            elif instance == 2:
+                print(f"Instance {instance}, iteration {iteration}: Running fast extension pass only.")
+                await run_fast_extension_pass(db)
+                #await crawler(db)
+            else:
+                print(f"Instance {instance}, iteration {iteration}: Running full crawler.")
+                await crawler(db)
+        db.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
