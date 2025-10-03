@@ -50,25 +50,37 @@ LINKS_INDEX = 'crawler-links'
 # --- What to keep ---
 # --------------------
 
-# Word extraction
+# Enable / Disable word extraction
 EXTRACT_WORDS = True
+
+# Remove special chars from words
 WORDS_REMOVE_SPECIAL_CHARS = True
+
+# Convert words to lowercase
 WORDS_TO_LOWER = True
+
+# Minimum word length
 WORDS_MIN_LEN = 3
 
 # Files won't be longer than MAX_FILENAME_LENGTH in disk. If it happens
 # name will be trunkated, but original extensions are kept.
 MAX_FILENAME_LENGTH = 255
 
-# NonSafeForWork parameters
+# Categorize images as NSFW
 CATEGORIZE_NSFW = False
+
+# Minimum value to categorize as NSFW
 NSFW_MIN_PROBABILITY = .78
+
 # Minimum number of pixels an image should have in order to be evaluated
 MIN_NSFW_RES = 128 * 128
+
 DOWNLOAD_NSFW = False
 NSFW_FOLDER = 'images/nsfw'
+
 DOWNLOAD_SFW = False
 SFW_FOLDER = 'images/sfw'
+
 DOWNLOAD_ALL_IMAGES = False
 IMAGES_FOLDER = 'images'
 
@@ -124,16 +136,20 @@ INITIAL_URL = 'https://crawler-test.com/'
 # might sound aggressive for some websites
 HUNT_OPEN_DIRECTORIES = True
 
-INPUT_DIR = 'input_url_files' 
+# Folder where you place url files to be crawled
+INPUT_FOLDER = 'input_url_files' 
+# Url from file batch size
+MAX_URLS_FROM_FILE = 100
 
 ITERATIONS = 10000
 RANDOM_SITES_QUEUE = 10000
 
+# Weighs used to pick methods
 METHOD_WEIGHTS = {
-    "fewest_urls":  10000,
-    "oldest":       10000,
-    "host_prefix":  100000,
-    "random":       100000
+    "fewest_urls":  1,
+    "oldest":       1,
+    "host_prefix":  10,
+    "random":       10
 }
 
 # -----------------------------
@@ -161,7 +177,7 @@ FAST_DELAY = 2
 FAST_RANDOM_MIN_WAIT = 0
 FAST_RANDOM_MAX_WAIT = 0
 
-MAX_FAST_WORKERS = 4
+MAX_FAST_WORKERS = 8
 
 USE_OCTET_STREAM = True
 
