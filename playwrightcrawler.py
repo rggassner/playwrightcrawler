@@ -1,42 +1,31 @@
 #!venv/bin/python3
-from config import *
-import re
-import os
-import json
-import time
-import httpx
+from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
+from datetime import datetime, timezone
+from pathlib import PurePosixPath
+from collections import Counter
+from io import BytesIO
+import argparse
+import asyncio
 import fcntl
 import random
-import chardet
 import hashlib
-import asyncio
-import urllib3
-import hashlib
-import requests
 import warnings
-import argparse
+import re
+import os
+import httpx
+import chardet
+import urllib3
+import requests
 import absl.logging
 import numpy as np
-from io import BytesIO
-from pprint import pprint
-from collections import Counter
-from pathlib import PurePosixPath
 from fake_useragent import UserAgent
-from datetime import datetime, timezone
+from elasticsearch import Elasticsearch, helpers
+from elasticsearch.exceptions import RequestError
 from PIL import Image, UnidentifiedImageError
 from playwright.async_api import async_playwright
-from playwright.async_api import Error as PlaywrightError
-from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from urllib3.exceptions import InsecureRequestWarning
-from elasticsearch import helpers, ConflictError
-from elasticsearch import NotFoundError, RequestError
-from elasticsearch import Elasticsearch
-from elasticsearch import exceptions as es_exceptions
-from elasticsearch.exceptions import NotFoundError, RequestError
-from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+from config import *
 
 
 
@@ -65,6 +54,7 @@ results = {"crawledcontent": {}, "crawledlinks": set()}
 content_type_octetstream = [
         r"^text/octet$",
         r"^octet/stream$",
+        r"^application/stream$",
         r"^binary/octet-stream$",
         r"^application/download$",
         r"^application/octetstream$",
@@ -90,6 +80,7 @@ content_type_html_regex = [
         r"^text/x-html-fragment$",
         r"^application/xhtml\+xml$",
         r"^text/html,charset=UTF-8$",
+        r"^text/html,charset=iso-8859-1$",
         r"^text/vnd\.reddit\.partial\+html$",
         r"^text/htmltext/html;charset=utf-8$",
     ]
@@ -239,61 +230,139 @@ content_type_plain_text_regex = [
         r"^application/json-amazonui-streaming$",
     ]
 
+# for ct in `wget -O - https://www.iana.org/assignments/media-types/image.csv | grep -vP "Template" |cut -d, -f 2`; do echo "        r\"^$ct\$\","; done | sort | uniq |awk '{ print length, $0 }' | sort -n | awk '{ $1=""; sub(/^ /, ""); print "        "$1}'
 content_type_image_regex = [
         r"^jpg$",
         r"^png$",
-        r"^webp$",
         r"^jpeg$",
-        r"^webpx$",
-        r"^.jpeg$",
-        r"^image/$",
+        r"^webp$",
         r"^image$",
-        r"^img/jpeg$",
+        r"^.jpeg$",
+        r"^webpx$",
+        r"^image/$",
         r"^img/png$",
         r"^image/\*$",
+        r"^img/jpeg$",
         r"^image/any$",
         r"^image/bmp$",
+        r"^image/cgm$",
+        r"^image/dpx$",
+        r"^image/emf$",
         r"^image/gif$",
         r"^image/ico$",
+        r"^image/ief$",
+        r"^image/j2c$",
+        r"^image/jls$",
         r"^image/jp2$",
         r"^image/jpg$",
+        r"^image/jph$",
+        r"^image/jpm$",
+        r"^image/jpx$",
+        r"^image/jxl$",
+        r"^image/jxr$",
+        r"^image/jxs$",
+        r"^image/ktx$",
         r"^image/pbf$",
         r"^image/png$",
         r"^image/svg$",
-        r"^(null)/ico$",
-        r"^image/heic$",
-        r"^image/fits$",
-        r"^image/apng$",
-        r"^image/avif$",
+        r"^image/t38$",
+        r"^image/wmf$",
         r"^image/jpeg$",
+        r"^image/jphc$",
+        r"^image/jxrA$",
+        r"^image/aces$",
+        r"^image/apng$",
+        r"^image/avci$",
+        r"^image/avcs$",
+        r"^image/avif$",
+        r"^image/fits$",
+        r"^image/heic$",
+        r"^image/heif$",
+        r"^image/hsj2$",
+        r"^image/jaii$",
+        r"^image/jais$",
+        r"^image/jpeg$",
+        r"^image/jxrS$",
+        r"^image/jxsc$",
+        r"^image/jxsi$",
+        r"^image/jxss$",
+        r"^image/ktx2$",
         r"^image/tiff$",
         r"^image/webp$",
-        r"^image/x-ico$",
+        r"^(null)/ico$",
+        r"^image/g3fax$",
+        r"^image/hej2k$",
         r"^image/pjpeg$",
-        r"^image/x-png$",
+        r"^image/x-emf$",
         r"^image/x-eps$",
-        r"^\(null\)/ico$",
+        r"^image/x-ico$",
+        r"^image/x-png$",
+        r"^image/x-wmf$",
         r"^image/dicomp$",
+        r"^image/naplps$",
         r"^image/x-icon$",
+        r"^\(null\)/ico$",
+        r"^image/example$",
         r"^image/\{png\}$",
+        r"^image/prs.pti$",
+        r"^image/svg+xml$",
+        r"^image/tiff-fx$",
+        r"^image/vnd.dwg$",
+        r"^image/vnd.dxf$",
+        r"^image/vnd.fpx$",
+        r"^image/vnd.fst$",
+        r"^image/vnd.mix$",
+        r"^image/vnd.svf$",
         r"^data:image/png$",
-        r"^image/vnd\.dwg$",
+        r"^image/prs.btif$",
         r"^image/svg\+xml$",
+        r"^image/vnd.clip$",
+        r"^image/vnd.djvu$",
+        r"^image/vnd\.dwg$",
+        r"^image/vnd.xiff$",
         r"^image/x-ms-bmp$",
+        r"^application/jpg$",
+        r"^image/dicom-rle$",
         r"^image/vnd\.djvu$",
         r"^image/x-xbitmap$",
-        r"^image/x-photoshop$",
+        r"^image/pwg-raster$",
+        r"^image/vnd.ms-modi$",
+        r"^image/vnd.net-fpx$",
+        r"^image/vnd.pco.b16$",
         r"^image/x-coreldraw$",
+        r"^image/x-photoshop$",
+        r"^image/extendedwebp$",
+        r"^image/vnd.cns.inf2$",
+        r"^image/vnd.radiance$",
+        r"^image/vnd.wap.wbmp$",
         r"^image/x-cmu-raster$",
         r"^image/x-win-bitmap$",
-        r"^image/vnd\.wap\.wbmp$",
+        r"^image/heic-sequence$",
+        r"^image/heif-sequence$",
         r"^image/png,image/jpeg$",
+        r"^image/vnd.sealed.png$",
+        r"^image/vnd\.wap\.wbmp$",
+        r"^image/vnd.zbrush.pcx$",
+        r"^image/vnd.tencent.tap$",
         r"^text/plain,image/avif$",
-        r"^image/png, image/jpeg$",
+        r"^image/vnd.dece.graphic$",
+        r"^image/vnd.dvb.subtitle$",
+        r"^image/vnd.fastbidsheet$",
+        r"^image/vnd.mozilla.apng$",
         r"^image/x\.fb\.keyframes$",
+        r"^image/vnd.microsoft.icon$",
+        r"^image/vnd.adobe.photoshop$",
+        r"^image/vnd.blockfact.facti$",
         r"^image/vnd\.microsoft\.icon$",
         r"^image/vnd\.adobe\.photoshop$",
-        r"^application/jpg$",
+        r"^image/vnd.globalgraphics.pgb$",
+        r"^binary/octet-stream,image/webp$",
+        r"^image/vnd.fujixerox.edmics-mmr$",
+        r"^image/vnd.fujixerox.edmics-rlc$",
+        r"^image/vnd.valve.source.texture$",
+        r"^image/vnd.airzip.accelerator.azv$",
+        r"^image/vnd.sealedmedia.softseal.gif$",
+        r"^image/vnd.sealedmedia.softseal.jpg$",
     ]
 
 content_type_midi_regex = [
@@ -396,6 +465,9 @@ content_type_doc_regex = [
         r"^application/vnd\.visio$",
         r"^application/vnd\.ms-word$",
         r"^application/vnd\.ms-excel$",
+        r"^application/vnd\.comicbook-rar$",
+        r"^application/vnd\.comicbook\+zip$",
+        r"^application/vnd\.freelog\.comic$",
         r"^application/vnd\.ms-officetheme$",
         r"^application/vnd\.ms-visio\.drawing$",
         r"^application/vnd\.ms-word\.document\.12$",
@@ -403,11 +475,12 @@ content_type_doc_regex = [
         r"^application/vnd\.oasis\.opendocument\.text$",
         r"^application/vnd\.oasis\.opendocument\.spreadsheet$",
         r"^application/vnd\.oasis\.opendocument\.presentation$",
-        r"^application/vnd\.oasis\.opendocument\.formula-template$",
         r"^application/vnd\.ms-excel\.sheet\.macroenabled\.12$",
         r"^application/vnd\.openxmlformats-officedocument\.spre$",
         r"^application/vnd\.oasis\.opendocument\.formula-template$",
+        r"^application/vnd\.oasis\.opendocument\.formula-template$",
         r"^application/vnd\.ms-powerpoint\.slideshow\.macroEnabled\.12$",
+        r"^application/vnd\.openxmlformats-officedocument\.wordprocessingml$",
         r"^application/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet$",
         r"^application/vnd\.openxmlformats-officedocument\.presentationml\.slideshow",
         r"^application/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$",
@@ -441,6 +514,7 @@ content_type_font_regex = [
         r"^font/opentype$",
         r"^font/font-woff$",
         r"^\(null\)/woff2$",
+        r"^font/collection$",
         r"^font/font-woff2$",
         r"^application/ttf$",
         r"^application/font$",
@@ -568,6 +642,7 @@ content_type_all_others_regex = [
         r"^application/proto$",
         r"^model/gltf-binary$",
         r"^text/htmltext/css$",
+        r"^application/x-plt$",
         r"^text/html,text/css$",
         r"^application/x-shar$",
         r"^application/x-ruby$",
@@ -759,6 +834,8 @@ EXTENSION_MAP = {
         ".rar": content_type_compressed_regex,
         ".sql": content_type_database_regex,
         ".mdb": content_type_database_regex,
+        ".cbr": content_type_doc_regex,
+        ".cbz": content_type_doc_regex,
         ".doc": content_type_doc_regex,
         ".docx": content_type_doc_regex,
         ".vsd": content_type_doc_regex,
@@ -773,22 +850,58 @@ EXTENSION_MAP = {
         ".TTF": content_type_font_regex,
         ".woff": content_type_font_regex,
         ".woff2": content_type_font_regex,
+        ".aces": content_type_image_regex,
+        ".apng": content_type_image_regex,
+        ".avci": content_type_image_regex,
+        ".avcs": content_type_image_regex,
+        ".avif": content_type_image_regex,
+        ".bmp": content_type_image_regex,
+        ".cgm": content_type_image_regex,
         ".cur": content_type_image_regex,
+        ".dpx": content_type_image_regex,
+        ".emf": content_type_image_regex,
+        ".example": content_type_image_regex,
         ".fits": content_type_image_regex,
+        ".g3fax": content_type_image_regex,
         ".gif": content_type_image_regex,
+        ".heic": content_type_image_regex,
         ".HEIC": content_type_image_regex,
+        ".heif": content_type_image_regex,
+        ".hej2k": content_type_image_regex,
         ".ico": content_type_image_regex,
+        ".ief": content_type_image_regex,
+        ".j2c": content_type_image_regex,
+        ".jaii": content_type_image_regex,
+        ".jais": content_type_image_regex,
+        ".jls": content_type_image_regex,
         ".jp2": content_type_image_regex,
+        ".jpeg": content_type_image_regex,
         ".jpg": content_type_image_regex,
         ".JPG": content_type_image_regex,
-        ".jpeg": content_type_image_regex,
+        ".jphc": content_type_image_regex,
+        ".jph": content_type_image_regex,
+        ".jpm": content_type_image_regex,
+        ".jpx": content_type_image_regex,
+        ".jxl": content_type_image_regex,
+        ".jxrA": content_type_image_regex,
+        ".jxr": content_type_image_regex,
+        ".jxrS": content_type_image_regex,
+        ".jxsc": content_type_image_regex,
+        ".jxs": content_type_image_regex,
+        ".jxsi": content_type_image_regex,
+        ".jxss": content_type_image_regex,
+        ".ktx2": content_type_image_regex,
+        ".ktx": content_type_image_regex,
+        ".naplps": content_type_image_regex,
         ".pbf": content_type_image_regex,
         ".png": content_type_image_regex,
         ".PNG": content_type_image_regex,
         ".psd": content_type_image_regex,
         ".svg": content_type_image_regex,
+        ".t38": content_type_image_regex,
         ".tiff": content_type_image_regex,
         ".webp": content_type_image_regex,
+        ".wmf": content_type_image_regex,
         ".mid": content_type_midi_regex,
         ".Mid": content_type_midi_regex,
         ".midi": content_type_midi_regex,
@@ -817,8 +930,8 @@ def db_create_monthly_indexes(db=None):
         raise ValueError("db connection is required")
     urls_index = get_index_name(LINKS_INDEX)
     content_index = get_index_name(CONTENT_INDEX)
-
-    return urls_index, content_index
+    return True
+    #return urls_index, content_index
 
 def get_urls_by_random_host_prefix(db, size=RANDOM_SITES_QUEUE):
     """
@@ -2455,6 +2568,44 @@ def remove_blocked_hosts_from_es_db(db):
     total_deleted += delete_from_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)
     print(f"\nDone. Total deleted: {total_deleted}")
 
+def remove_empty_content_type_from_es_db(db):
+    print(f"Starting safe bulk delete of empty content_type docs from {CONTENT_INDEX}")
+
+    query = {
+        "query": {
+            "bool": {
+                "must": [
+                    {"bool": {
+                        "should": [
+                            {"term": {"content_type.keyword": ""}},
+                            {"bool": {"must_not": {"exists": {"field": "content_type.keyword"}}}}
+                        ]
+                    }}
+                ]
+            }
+        }
+    }
+
+    try:
+        # Keep it foreground: wait_for_completion=True
+        response = db.es.delete_by_query(
+            index=f"{CONTENT_INDEX}-*",
+            body=query,
+            refresh=True,
+            wait_for_completion=True,  # block until it's done
+            slices="auto",             # parallelize internally
+            conflicts="proceed",
+            timeout="2m"               # extend if your deletes are heavy
+        )
+
+        deleted = response.get("deleted", 0)
+        print(f"Foreground delete finished. Deleted: {deleted}")
+        return deleted
+
+    except Exception as e:
+        print(f"Error in bulk delete: {e}")
+        return 0
+
 
 def remove_blocked_urls_from_es_db(db):
     # Compile path-based regex block list
@@ -3005,98 +3156,89 @@ def deduplicate_links_vs_content_es(
 
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     print("Housekeeping links that are already in content.")
-    deduplicate_links_vs_content_es(db)  # keep deduplication step
+    deduplicate_links_vs_content_es(db)
 
-    # Shuffle extensions to avoid always crawling in the same order
     shuffled_extensions = list(EXTENSION_MAP.items())
     random.shuffle(shuffled_extensions)
 
-    for extension, content_type_patterns in shuffled_extensions:
-        await asyncio.sleep(FAST_DELAY)
-        print(f"[FAST CRAWLER] Extension: {extension}")
-        xtension=extension[1:]
-        query=""
-        if STRICT_EXTENSION_QUERY:
-            query = {
-                "bool": {
-                    "must": [
-                        {
-                            "regexp": {
-                                "url.keyword": f".*\\/\\/.*\\/.*\\.{xtension}"                                
+    async with async_playwright() as playwright:  # 👈 only start once
+        for extension, content_type_patterns in shuffled_extensions:
+            await asyncio.sleep(FAST_DELAY)
+            print(f"[FAST CRAWLER] Extension: {extension}")
+            xtension = extension[1:]
+
+            if STRICT_EXTENSION_QUERY:
+                query = {
+                    "bool": {
+                        "must": [
+                            {
+                                "regexp": {
+                                    "url.keyword": f".*\\/\\/.*\\/.*\\.{xtension}"
+                                }
                             }
-                        }
-                    ]
+                        ]
+                    }
                 }
-            }
-        else:
-            query = {
-                "bool": {
-                    "must": [
-                        {"wildcard": {"url": f"*{extension}"}}
-                    ]
+            else:
+                query = {
+                    "bool": {
+                        "must": [
+                            {"wildcard": {"url": f"*{extension}"}}
+                        ]
+                    }
                 }
-            }
-        try:
-            # Scroll through all matching URLs in batches
-            scroll_size = 5000
-            scroll = db.es.search(
-                index=f"{LINKS_INDEX}-*",
-                query=query,
-                size=scroll_size,
-                scroll="2m"
-            )
-            scroll_id = scroll["_scroll_id"]
-            hits = scroll["hits"]["hits"]
 
-            while hits:
-                urls = [hit["_source"]["url"] for hit in hits if "url" in hit["_source"]]
-                random.shuffle(urls)
-
-                # Reset results for this batch
-                results = {"crawledcontent": {}, "crawledlinks": set()}
-
-                # Semaphore to limit concurrency
-                semaphore = asyncio.Semaphore(max_workers)
-
-                async def sem_task(url):
-                    async with semaphore:
-                        return await fast_extension_crawler(url, extension, content_type_patterns, db)
-
-                tasks = [sem_task(url) for url in urls]
-                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                for result in batch_results:
-                    if isinstance(result, Exception):
-                        #print(f"[FAST CRAWLER] Exception during execution: {result}")
-                        pass
-                    elif result:
-                        presults = preprocess_crawler_data(result)
-                        # Merge presults into the current batch results
-                        if isinstance(presults, list):
-                            for item in presults:
-                                if "crawledcontent" in item:
-                                    results["crawledcontent"].update(item["crawledcontent"])
-                                if "crawledlinks" in item:
-                                    results["crawledlinks"].update(item["crawledlinks"])
-
-                # Save after processing this batch
-                if results["crawledcontent"] or results["crawledlinks"]:
-                    db.save_batch([results])
-
-                # Fetch next batch
-                scroll = db.es.scroll(scroll_id=scroll_id, scroll="2m")
+            try:
+                scroll_size = 5000
+                scroll = db.es.search(
+                    index=f"{LINKS_INDEX}-*",
+                    query=query,
+                    size=scroll_size,
+                    scroll="2m"
+                )
                 scroll_id = scroll["_scroll_id"]
                 hits = scroll["hits"]["hits"]
 
-            # Clear scroll context to free resources
-            db.es.clear_scroll(scroll_id=scroll_id)
+                while hits:
+                    urls = [hit["_source"]["url"] for hit in hits if "url" in hit["_source"]]
+                    random.shuffle(urls)
 
-        except Exception as e:
-            #print(f"[FAST CRAWLER] Error retrieving URLs for extension {extension}: {e}")
-            pass
+                    results = {"crawledcontent": {}, "crawledlinks": set()}
+                    semaphore = asyncio.Semaphore(max_workers)
+
+                    async def sem_task(url):
+                        async with semaphore:
+                            return await fast_extension_crawler(url, extension, content_type_patterns, db, playwright)
+
+                    tasks = [sem_task(url) for url in urls]
+                    batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    for result in batch_results:
+                        if isinstance(result, Exception):
+                            pass
+                        elif result:
+                            presults = preprocess_crawler_data(result)
+                            if isinstance(presults, list):
+                                for item in presults:
+                                    if "crawledcontent" in item:
+                                        results["crawledcontent"].update(item["crawledcontent"])
+                                    if "crawledlinks" in item:
+                                        results["crawledlinks"].update(item["crawledlinks"])
+
+                    if results["crawledcontent"] or results["crawledlinks"]:
+                        db.save_batch([results])
+
+                    scroll = db.es.scroll(scroll_id=scroll_id, scroll="2m")
+                    scroll_id = scroll["_scroll_id"]
+                    hits = scroll["hits"]["hits"]
+
+                db.es.clear_scroll(scroll_id=scroll_id)
+
+            except Exception as e:
+                pass
 
 
-async def fast_extension_crawler(url, extension, content_type_patterns, db):
+async def fast_extension_crawler(url, extension, content_type_patterns, db, playwright):  # 👈 added playwright
     headers = {"User-Agent": UserAgent().random}
 
     try:
@@ -3106,32 +3248,25 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
             headers=headers
         )
     except Exception:
-        #print(f"[FAST CRAWLER] No head {url}")
-        async with async_playwright() as playwright:
-            await get_page(url, playwright, db)
+        await get_page(url, playwright, db)  # 👈 reuse, not reopen
         return
 
     if not (200 <= head_resp.status_code < 300):
-        #print(f"[FAST CRAWLER] No code 2xx {url}")
-        async with async_playwright() as playwright:
-            await get_page(url, playwright, db)
+        await get_page(url, playwright, db)
         return
 
     print(f"-{url}-")
 
     content_type = head_resp.headers.get("Content-Type", "")
     if not content_type:
-        #print(f"[FAST CRAWLER] No content type found for {url}")
-        async with async_playwright() as playwright:
-            await get_page(url, playwright, db)
+        await get_page(url, playwright, db)
         return
 
     content_type = content_type.lower().split(";")[0].strip()
     if not any(re.match(pattern, content_type) for pattern in content_type_patterns):
         if content_type not in ['text/html','text/plain','application/json','text/javascript']:
             print(f"\033[92m[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-\033[0m")
-        async with async_playwright() as playwright:
-            await get_page(url, playwright, db)
+        await get_page(url, playwright, db)
         return
 
     try:
@@ -3143,7 +3278,6 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
         for regex, function in content_type_functions:
             if regex.search(content_type):
                 found = True
-
                 needs_download = (
                     (function.__name__ == "content_type_audios" and DOWNLOAD_AUDIOS) or
                     (function.__name__ == "content_type_compresseds" and DOWNLOAD_COMPRESSEDS) or
@@ -3165,11 +3299,9 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
                             verify=False, headers=headers
                         )
                         content = get_resp.content
-                    except Exception as e:
-                        #print(f"[FAST CRAWLER] Failed GET for {url}: {e}")
+                    except Exception:
                         return
 
-                # Call the correct handler
                 doc = await function({
                     "url": url,
                     "content": content,
@@ -3179,16 +3311,13 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db):
                 })
 
                 if doc:
-                    # Same persistence strategy as get_page
                     results["crawledcontent"].update(doc)
-
                 break
 
         if not found:
             print(f"\033[91m[FAST CRAWLER] UNKNOWN type -{url}- -{content_type}-\033[0m")
 
-    except Exception as e:
-        #print(f"[FAST CRAWLER] Error processing {url}: {e}")
+    except Exception:
         pass
 
     await asyncio.sleep(random.uniform(FAST_RANDOM_MIN_WAIT, FAST_RANDOM_MAX_WAIT))
@@ -3374,10 +3503,13 @@ async def get_page(url, playwright, db):
     results = {"crawledcontent": {}, "crawledlinks": set()}
 
 async def crawler(db):
+    """
+    Iterate over random urls
+    """
     random_urls = get_random_unvisited_domains(db=db)
     for target_url in random_urls:
         try:
-            print('    {}'.format(target_url))
+            print(f'    {target_url}')
             async with async_playwright() as playwright:
                 await get_page(target_url, playwright, db)
         except UnicodeEncodeError:
@@ -3385,8 +3517,12 @@ async def crawler(db):
 
 
 async def main():
+    """
+    Crawler main function
+    """
     db = DatabaseConnection()
-    urls_index, content_index = db_create_monthly_indexes(db)
+    #urls_index, content_index = db_create_monthly_indexes(db)
+    db_create_monthly_indexes(db)
     create_directories()
 
     parser = argparse.ArgumentParser(description="Crawler runner")
@@ -3406,6 +3542,8 @@ async def main():
         instance = get_instance_number()
         for iteration in range(ITERATIONS):
             if instance == 1:
+                print(f"Instance {instance}, iteration {iteration}: Removing urls with empty content_type.")
+                remove_empty_content_type_from_es_db(db)
                 if REMOVE_BLOCKED_HOSTS:
                     print(f"Instance {instance}, iteration {iteration}: Removing urls from hosts that are blocklisted.")
                     remove_blocked_hosts_from_es_db(db)
