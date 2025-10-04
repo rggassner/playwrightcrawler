@@ -177,7 +177,7 @@ FAST_DELAY = 2
 FAST_RANDOM_MIN_WAIT = 0
 FAST_RANDOM_MAX_WAIT = 0
 
-MAX_FAST_WORKERS = 8
+MAX_FAST_WORKERS = 16
 
 USE_OCTET_STREAM = True
 
@@ -212,39 +212,5 @@ URL_REGEX_BLOCK_LIST = [
     '/images/images/images/images/',
     '/plugins/owlcarousel/plugins/',
 ]
-
-
-URLS_MAPPING = {
-    "mappings": {
-        "properties": {
-            "url": {"type": "keyword"},
-            "visited": {"type": "boolean"},
-            "content_type": {"type": "keyword"},
-            "source": {"type": "keyword"},
-            "host": {"type": "keyword"},
-            "parent_host": {"type": "keyword"},
-            "created_at": {"type": "date"},
-            "updated_at": {"type": "date"},
-            "emails": {"type": "keyword"},
-            "random_bucket": {"type": "integer"},
-        }
-    }
-}
-
-CONTENT_MAPPING = {
-    "mappings": {
-        "properties": {
-            "url": {"type": "keyword"},
-            "host": {"type": "keyword"},
-            "content_type": {"type": "keyword"},
-            "words": {"type": "keyword"},
-            "raw_webcontent": {"type": "text"},
-            "min_webcontent": {"type": "text"},
-            "created_at": {"type": "date"},
-            "updated_at": {"type": "date"}
-        }
-    }
-}
-
 
 
