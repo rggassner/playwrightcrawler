@@ -3495,10 +3495,22 @@ async def run_initial(db,initial_url: str | None = None):
 
 
 async def get_page(url, playwright, db):
+    """
+    Asynchronously crawls a single web page using Playwright, processes the results, 
+    and saves them to the database.
+
+    This function acts as a high-level wrapper around `get_page_async()`. It handles 
+    the entire lifecycle of crawling a page — fetching it with Playwright, 
+    preprocessing the collected data, persisting it to the database, 
+    and resetting the global results buffer.
+
+    Side Effects:
+        - Updates and resets the global `results` variable.
+        - Saves processed data (content and links) to the database.
+    """    
     global results
-    await get_page_async(url, playwright)  # just populates global
+    await get_page_async(url, playwright)
     presults = preprocess_crawler_data(results)
-    #pprint(presults)
     db.save_batch(presults)
     results = {"crawledcontent": {}, "crawledlinks": set()}
 
