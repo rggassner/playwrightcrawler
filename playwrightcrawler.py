@@ -823,6 +823,7 @@ EXTENSION_MAP = {
         ".s3m": content_type_audio_regex,
         ".wav": content_type_audio_regex,
         ".xm": content_type_audio_regex,
+        ".webm": content_type_audio_regex,
         ".Z": content_type_compressed_regex,
         ".lz": content_type_compressed_regex,
         ".7z": content_type_compressed_regex,
@@ -3330,8 +3331,6 @@ def is_html_content(content_type: str) -> bool:
     )
 
 
-# --- main function ---
-
 async def get_page_async(url: str, playwright):
     browser = await playwright.chromium.launch(headless=True)
     user_agent = ua.random
@@ -3378,10 +3377,8 @@ async def get_page_async(url: str, playwright):
             async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=PAGE_TIMEOUT_MS/1000) as client:
                 resp = await client.get(url, headers=headers)
                 content_type = sanitize_content_type(resp.headers.get("content-type", ""))
-                body_bytes = resp.content  # use for handle_response if needed
         except Exception as e:
-            #print(f"[HTTPX fallback failed] {url}: {e}")
-            body_bytes = None
+            print(f"[HTTPX fallback failed] {url}: {e}")
 
     # Safe DOM snapshot and links (only if HTML)
     html_text = await safe_content(page) if is_html_content(content_type) else ""
@@ -3399,7 +3396,7 @@ async def get_page_async(url: str, playwright):
         try:
             if page.is_closed():
                 return
-            status = response.status
+            #status = response.status
             rurl = response.url
             host = urlsplit(rurl)[1]
 
@@ -3457,19 +3454,17 @@ async def get_page_async(url: str, playwright):
     try:
         await page.goto(url, wait_until="domcontentloaded")
     except Exception as e:
-        #print(f"Error while fetching {url}: {e}")
-        pass
+        print(f"Error while fetching {url}: {e}")
     finally:
         page.remove_listener("response", handler)
         await browser.close()
 
     found = False
-    for regex, function in content_type_functions:
+    for regex, _ in content_type_functions:
         if regex.search(content_type):
             found = True
     if not found:
         print(f"\033[91mUNKNOWN type -{url}- -{content_type}-\033[0m")
-    # Final storage
     page_data["crawledcontent"].update({
         url: {
             "url": url,
@@ -3488,12 +3483,6 @@ async def get_page_async(url: str, playwright):
     results["crawledlinks"].update(page_data["crawledlinks"])
 
 
-async def run_initial(db,initial_url: str | None = None):
-    url = initial_url or INITIAL_URL
-    async with async_playwright() as playwright:
-        await get_page(url, playwright,db)
-
-
 async def get_page(url, playwright, db):
     """
     Asynchronously crawls a single web page using Playwright, processes the results, 
@@ -3508,7 +3497,7 @@ async def get_page(url, playwright, db):
         - Updates and resets the global `results` variable.
         - Saves processed data (content and links) to the database.
     """    
-    global results
+    global results # pylint: disable=global-statement
     await get_page_async(url, playwright)
     presults = preprocess_crawler_data(results)
     db.save_batch(presults)
@@ -3549,7 +3538,9 @@ async def main():
     if args.initial:
         # If user provided a string, it's the URL. If it's just True, use INITIAL_URL.
         initial_url = None if args.initial is True else args.initial
-        await run_initial(db,initial_url)
+        url = initial_url or INITIAL_URL
+        async with async_playwright() as playwright:
+            await get_page(url, playwright,db)
     else:
         instance = get_instance_number()
         for iteration in range(ITERATIONS):
