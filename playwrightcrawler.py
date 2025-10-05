@@ -3332,18 +3332,24 @@ def is_html_content(content_type: str) -> bool:
 
 
 async def get_page_async(url: str, playwright):
-    browser = await playwright.chromium.launch(headless=True)
     user_agent = ua.random
-    context = await browser.new_context(user_agent=user_agent)
-    page = await context.new_page()
-    page.set_default_timeout(PAGE_TIMEOUT_MS)
     parent_host = urlsplit(url)[1]
-    page_data = {
-        "crawledcontent": {},
-        "crawledlinks": set()
-    }
+    page_data = {"crawledcontent": {}, "crawledlinks": set()}
 
-    async def crawl(scroll: bool = False):
+    # --- Helper: setup and teardown ---
+    async def setup_browser():
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent=user_agent)
+        page = await context.new_page()
+        page.set_default_timeout(PAGE_TIMEOUT_MS)
+        return browser, page
+
+    async def teardown_browser(browser, page, handler):
+        page.remove_listener("response", handler)
+        await browser.close()
+
+    # --- Helper: crawl with or without scroll ---
+    async def crawl(page, scroll: bool = False):
         try:
             response = await page.goto(url, wait_until="domcontentloaded")
             if not response:
@@ -3360,57 +3366,38 @@ async def get_page_async(url: str, playwright):
                 await page.wait_for_load_state("networkidle")
 
             return ctype
-        except Exception as e:
-            #print(f"Playwright fetch error for {url}: {e}")
+        except Exception:
             return None
 
-    # --- Playwright attempt ---
-    content_type = await crawl(scroll=False)
-    if content_type is None:
-        content_type = await crawl(scroll=True)
-    content_type = content_type or ""
-
-    # --- Fallback to httpx if content_type is still empty ---
-    if not content_type:
+    # --- Helper: fallback using httpx ---
+    async def httpx_fallback():
         try:
             headers = {"User-Agent": user_agent}
-            async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=PAGE_TIMEOUT_MS/1000) as client:
+            async with httpx.AsyncClient(
+                verify=False, follow_redirects=True, timeout=PAGE_TIMEOUT_MS / 1000
+            ) as client:
                 resp = await client.get(url, headers=headers)
-                content_type = sanitize_content_type(resp.headers.get("content-type", ""))
+                return sanitize_content_type(resp.headers.get("content-type", ""))
         except Exception as e:
             print(f"[HTTPX fallback failed] {url}: {e}")
+            return ""
 
-    # Safe DOM snapshot and links (only if HTML)
-    html_text = await safe_content(page) if is_html_content(content_type) else ""
-    links = await get_links_page(page, url) if is_html_content(content_type) else set()
-    page_data["crawledlinks"].update(links)
-
-    # Extract words / raw / min content
-    words = await get_words_from_page(page) if EXTRACT_WORDS and is_html_content(content_type) else ''
-    raw_webcontent = str(html_text)[:MAX_WEBCONTENT_SIZE] if EXTRACT_RAW_WEBCONTENT and is_html_content(content_type) else ''
-    min_webcontent = await get_min_webcontent_page(page) if EXTRACT_MIN_WEBCONTENT and is_html_content(content_type) else ''
-    isopendir, pat = is_open_directory(str(html_text), url)
-
-    # --- Keep the original response handler ---
+    # --- Helper: handle responses from Playwright ---
     async def handle_response(response):
         try:
             if page.is_closed():
                 return
-            #status = response.status
+
             rurl = response.url
             host = urlsplit(rurl)[1]
-
-            body_bytes_local = None
-            content = ""
-            encoding = "utf-8"
-
             ctype = response.headers.get("content-type")
+
             try:
                 body_bytes_local = await response.body()
             except Exception:
                 return
 
-            # Decode textual content
+            content = ""
             if body_bytes_local and ctype and any(t in ctype for t in ["text", "json", "xml"]):
                 encoding = chardet.detect(body_bytes_local)["encoding"] or "utf-8"
                 try:
@@ -3432,7 +3419,11 @@ async def get_page_async(url: str, playwright):
                     if regex.search(ctype):
                         found = True
                         try:
-                            raw_content = body_bytes_local if isinstance(body_bytes_local, (bytes, bytearray)) else None
+                            raw_content = (
+                                body_bytes_local
+                                if isinstance(body_bytes_local, (bytes, bytearray))
+                                else None
+                            )
                             urlresult = await function({
                                 'url': rurl,
                                 'content': content,
@@ -3448,6 +3439,40 @@ async def get_page_async(url: str, playwright):
         except Exception as e:
             print(f"Error handling response: {e}")
 
+    # --- Helper: extract data from HTML page ---
+    async def extract_page_data(page, content_type):
+        html_text = await safe_content(page) if is_html_content(content_type) else ""
+        links = await get_links_page(page, url) if is_html_content(content_type) else set()
+        page_data["crawledlinks"].update(links)
+
+        words = (
+            await get_words_from_page(page)
+            if EXTRACT_WORDS and is_html_content(content_type)
+            else ''
+        )
+        raw_webcontent = (
+            str(html_text)[:MAX_WEBCONTENT_SIZE]
+            if EXTRACT_RAW_WEBCONTENT and is_html_content(content_type)
+            else ''
+        )
+        min_webcontent = (
+            await get_min_webcontent_page(page)
+            if EXTRACT_MIN_WEBCONTENT and is_html_content(content_type)
+            else ''
+        )
+        isopendir, pat = is_open_directory(str(html_text), url)
+
+        return html_text, links, words, raw_webcontent, min_webcontent, isopendir, pat
+
+    # --- Main logic starts here ---
+    browser, page = await setup_browser()
+
+    content_type = await crawl(page, scroll=False) or await crawl(page, scroll=True) or ""
+    if not content_type:
+        content_type = await httpx_fallback()
+
+    html_text, links, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
+
     handler = lambda response: asyncio.create_task(handle_response(response))
     page.on("response", handler)
 
@@ -3456,15 +3481,12 @@ async def get_page_async(url: str, playwright):
     except Exception as e:
         print(f"Error while fetching {url}: {e}")
     finally:
-        page.remove_listener("response", handler)
-        await browser.close()
+        await teardown_browser(browser, page, handler)
 
-    found = False
-    for regex, _ in content_type_functions:
-        if regex.search(content_type):
-            found = True
+    found = any(regex.search(content_type) for regex, _ in content_type_functions)
     if not found:
         print(f"\033[91mUNKNOWN type -{url}- -{content_type}-\033[0m")
+
     page_data["crawledcontent"].update({
         url: {
             "url": url,
@@ -3479,6 +3501,7 @@ async def get_page_async(url: str, playwright):
             "parent_host": parent_host
         }
     })
+
     results["crawledcontent"].update(page_data["crawledcontent"])
     results["crawledlinks"].update(page_data["crawledlinks"])
 
