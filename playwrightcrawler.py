@@ -230,7 +230,9 @@ content_type_plain_text_regex = [
         r"^application/json-amazonui-streaming$",
     ]
 
-# for ct in `wget -O - https://www.iana.org/assignments/media-types/image.csv | grep -vP "Template" |cut -d, -f 2`; do echo "        r\"^$ct\$\","; done | sort | uniq |awk '{ print length, $0 }' | sort -n | awk '{ $1=""; sub(/^ /, ""); print "        "$1}'
+#for ct in `wget -O - https://www.iana.org/assignments/media-types/image.csv |\
+#grep -vP "Template" |cut -d, -f 2`; do echo "        r\"^$ct\$\","; done | sort |\
+#uniq |awk '{ print length, $0 }' | sort -n | awk '{ $1=""; sub(/^ /, ""); print "        "$1}'
 content_type_image_regex = [
         r"^jpg$",
         r"^png$",
@@ -477,7 +479,6 @@ content_type_doc_regex = [
         r"^application/vnd\.oasis\.opendocument\.presentation$",
         r"^application/vnd\.ms-excel\.sheet\.macroenabled\.12$",
         r"^application/vnd\.openxmlformats-officedocument\.spre$",
-        r"^application/vnd\.oasis\.opendocument\.formula-template$",
         r"^application/vnd\.oasis\.opendocument\.formula-template$",
         r"^application/vnd\.ms-powerpoint\.slideshow\.macroEnabled\.12$",
         r"^application/vnd\.openxmlformats-officedocument\.wordprocessingml$",
@@ -3471,7 +3472,8 @@ async def get_page_async(url: str, playwright):
     if not content_type:
         content_type = await httpx_fallback()
 
-    html_text, links, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
+    #html_text, links, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
+    _, _, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
 
     handler = lambda response: asyncio.create_task(handle_response(response))
     page.on("response", handler)
