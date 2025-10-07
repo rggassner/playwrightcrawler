@@ -15,7 +15,6 @@ import os
 import httpx
 import chardet
 import urllib3
-import requests
 import absl.logging
 import numpy as np
 from fake_useragent import UserAgent
@@ -481,6 +480,7 @@ content_type_doc_regex = [
         r"^application/vnd\.openxmlformats-officedocument\.spre$",
         r"^application/vnd\.oasis\.opendocument\.formula-template$",
         r"^application/vnd\.ms-powerpoint\.slideshow\.macroEnabled\.12$",
+        r"^application/vnd\.openxmlformats-officedocument\.spreadsheetml$",
         r"^application/vnd\.openxmlformats-officedocument\.wordprocessingml$",
         r"^application/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet$",
         r"^application/vnd\.openxmlformats-officedocument\.presentationml\.slideshow",
@@ -491,6 +491,7 @@ content_type_doc_regex = [
 
 content_type_database_regex = [
         r"^application/sql$",
+        r"^application/x-sql$",
         r"^application/msaccess$",
         r"^application/x-msaccess$",
         ]
@@ -545,6 +546,7 @@ content_type_torrent_regex = [
         ]
 
 content_type_compressed_regex = [
+        r"^zip$",
         r"^multipart/x-zip$",
         r"^application/zip$",
         r"^application/rar$",
@@ -2577,12 +2579,15 @@ def remove_empty_content_type_from_es_db(db):
         "query": {
             "bool": {
                 "must": [
-                    {"bool": {
-                        "should": [
-                            {"term": {"content_type.keyword": ""}},
-                            {"bool": {"must_not": {"exists": {"field": "content_type.keyword"}}}}
-                        ]
-                    }}
+                    {
+                        "bool": {
+                            "should": [
+                                {"term": {"content_type.keyword": ""}},
+                                {"bool": {"must_not": {"exists": {"field": "content_type.keyword"}}}}
+                            ]
+                        }
+                    },
+                    {"term": {"visited": False}}
                 ]
             }
         }
@@ -3205,6 +3210,15 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
                     urls = [hit["_source"]["url"] for hit in hits if "url" in hit["_source"]]
                     random.shuffle(urls)
 
+                    # Track one URL per host
+                    host_seen = set()
+                    unique_urls = []
+                    for url in urls:
+                        host = urlparse(url).hostname
+                        if host and host not in host_seen:
+                            unique_urls.append(url)
+                            host_seen.add(host)
+
                     results = {"crawledcontent": {}, "crawledlinks": set()}
                     semaphore = asyncio.Semaphore(max_workers)
 
@@ -3212,8 +3226,9 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
                         async with semaphore:
                             return await fast_extension_crawler(url, extension, content_type_patterns, db, playwright)
 
-                    tasks = [sem_task(url) for url in urls]
+                    tasks = [sem_task(url) for url in unique_urls]
                     batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
 
                     for result in batch_results:
                         if isinstance(result, Exception):
@@ -3244,11 +3259,8 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db, play
     headers = {"User-Agent": UserAgent().random}
 
     try:
-        head_resp = requests.head(
-            url, timeout=(10, 10),
-            allow_redirects=True, verify=False,
-            headers=headers
-        )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=10.0), verify=False, headers=headers, follow_redirects=True) as client:
+            head_resp = await client.head(url)        
     except Exception:
         await get_page(url, playwright, db)  # 👈 reuse, not reopen
         return
@@ -3295,12 +3307,9 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db, play
                 content = None
                 if needs_download:
                     try:
-                        get_resp = requests.get(
-                            url, timeout=(10, 30),
-                            stream=True, allow_redirects=True,
-                            verify=False, headers=headers
-                        )
-                        content = get_resp.content
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0), verify=False, headers=headers, follow_redirects=True) as client:
+                            get_resp = await client.get(url)
+                            content = get_resp.content                        
                     except Exception:
                         return
 
@@ -3325,6 +3334,7 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db, play
     await asyncio.sleep(random.uniform(FAST_RANDOM_MIN_WAIT, FAST_RANDOM_MAX_WAIT))
 
 
+
 def is_html_content(content_type: str) -> bool:
     return any(
         re.match(pattern, content_type, re.IGNORECASE)
@@ -3332,7 +3342,7 @@ def is_html_content(content_type: str) -> bool:
     )
 
 
-async def get_page_async(url: str, playwright):
+async def get_page_async(url: str, playwright): # pylint: disable=too-many-statements
     user_agent = ua.random
     parent_host = urlsplit(url)[1]
     page_data = {"crawledcontent": {}, "crawledlinks": set()}
