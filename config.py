@@ -141,8 +141,11 @@ INPUT_FOLDER = 'input_url_files'
 # Url from file batch size
 MAX_URLS_FROM_FILE = 100
 
+#How many iterations should the crawler run before quitting
 ITERATIONS = 10000
-RANDOM_SITES_QUEUE = 10000
+
+#How many urls for every method
+RANDOM_SITES_QUEUE = 100
 
 # Weighs used to pick methods
 METHOD_WEIGHTS = {
@@ -177,7 +180,7 @@ FAST_DELAY = 2
 FAST_RANDOM_MIN_WAIT = 0
 FAST_RANDOM_MAX_WAIT = 0
 
-MAX_FAST_WORKERS = 16
+MAX_FAST_WORKERS = 8
 
 USE_OCTET_STREAM = True
 
