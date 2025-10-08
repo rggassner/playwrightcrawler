@@ -10,6 +10,7 @@ import fcntl
 import random
 import hashlib
 import warnings
+import pprint
 import re
 import os
 import httpx
@@ -775,6 +776,7 @@ content_type_all_others_regex = [
         r"^application/vnd\.mapbox-vector-tile$",
         r"^application/vnd\.cas\.services\+yaml$",
         r"^application/x-redhat-package-manager$",
+        r"^application/vnd\.adobe\.skybox\+json$",
         r"^application/vnd\.groove-tool-template$",
         r"^application/vnd\.apple\.installer\+xml$",
         r"^application/opensearchdescription\+xml$",
@@ -1215,6 +1217,8 @@ def get_host_levels(hostname):
         }
     }
 
+def is_embedded_url(url: str) -> bool:
+    return url.startswith(("data:", "blob:", "about:", "javascript:"))
 
 def preprocess_crawler_data(data: dict) -> dict:
 
@@ -1226,11 +1230,17 @@ def preprocess_crawler_data(data: dict) -> dict:
 
     if HUNT_OPEN_DIRECTORIES:
         for url, doc in crawledcontent.items():
+            if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
+                continue  # skip embedded base64 images        
             crawledlinks.update(set(get_directory_tree(url)))
         for url in crawledlinks.copy():
+            if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
+                continue  # skip embedded base64 images        
             crawledlinks.update(set(get_directory_tree(url)))
 
     for url in crawledlinks:
+        if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
+            continue  # skip embedded base64 images        
         try:
             url = sanitize_url(url)
             parts = urlsplit(url)
@@ -1249,6 +1259,8 @@ def preprocess_crawler_data(data: dict) -> dict:
             continue    
 
     for url, doc in crawledcontent.items():
+        if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
+            continue  # skip embedded base64 images        
         host = urlsplit(url).hostname
         if not host:
             continue  # skip if content URL has no host
