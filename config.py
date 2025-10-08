@@ -216,4 +216,5 @@ URL_REGEX_BLOCK_LIST = [
     '/plugins/owlcarousel/plugins/',
 ]
 
+MAX_URL_LENGTH = 4096
 
