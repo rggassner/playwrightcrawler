@@ -565,6 +565,7 @@ content_type_compressed_regex = [
         r"^application/vnd\.rar$",
         r"^application/x-tar-gz$",
         r"^application/x-compress$",
+        r"^application/gzipped-tar$",
         r"^application/zip-compressed$",
         r"^application/x-7z-compressed$",
         r"^application/x-rar-compressed$",
@@ -3361,7 +3362,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
     # --- Helper: setup and teardown ---
     async def setup_browser():
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=False)
         context = await browser.new_context(user_agent=user_agent)
         page = await context.new_page()
         page.set_default_timeout(PAGE_TIMEOUT_MS)
@@ -3462,6 +3463,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
         except Exception as e:
             print(f"Error handling response: {e}")
 
+
     # --- Helper: extract data from HTML page ---
     async def extract_page_data(page, content_type):
         html_text = await safe_content(page) if is_html_content(content_type) else ""
@@ -3529,26 +3531,74 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     results["crawledcontent"].update(page_data["crawledcontent"])
     results["crawledlinks"].update(page_data["crawledlinks"])
 
+import psutil
+import asyncio
+
+MAX_MEMORY_MB = 4000
+CHECK_INTERVAL = 1.5
+
+def total_memory_usage(process):
+    mem = process.memory_info().rss
+    for child in process.children(recursive=True):
+        mem += child.memory_info().rss
+    return mem / (1024**2)  # MB
+
+async def monitor_memory(pid, url, stop_event):
+    """Monitor memory usage and signal stop if threshold exceeded."""
+    process = psutil.Process(pid)
+    while not stop_event.is_set():
+        await asyncio.sleep(CHECK_INTERVAL)
+        mem_usage = total_memory_usage(process)
+        print(f"{mem_usage}")
+        if mem_usage > MAX_MEMORY_MB:
+            print(f"[WARN] Memory usage {mem_usage:.1f}MB — aborting {url}")
+            stop_event.set()
+            return
 
 async def get_page(url, playwright, db):
-    """
-    Asynchronously crawls a single web page using Playwright, processes the results, 
-    and saves them to the database.
+    global results
+    pid = psutil.Process().pid
+    stop_event = asyncio.Event()
+    memory_task = asyncio.create_task(monitor_memory(pid, url, stop_event))
 
-    This function acts as a high-level wrapper around `get_page_async()`. It handles 
-    the entire lifecycle of crawling a page — fetching it with Playwright, 
-    preprocessing the collected data, persisting it to the database, 
-    and resetting the global results buffer.
+    try:
+        # Wrap both tasks explicitly
+        crawl_task = asyncio.create_task(get_page_async(url, playwright))
+        stop_task = asyncio.create_task(stop_event.wait())
 
-    Side Effects:
-        - Updates and resets the global `results` variable.
-        - Saves processed data (content and links) to the database.
-    """    
-    global results # pylint: disable=global-statement
-    await get_page_async(url, playwright)
-    presults = preprocess_crawler_data(results)
-    db.save_batch(presults)
-    results = {"crawledcontent": {}, "crawledlinks": set()}
+        done, pending = await asyncio.wait(
+            [crawl_task, stop_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if stop_task in done and stop_event.is_set():
+            print(f"[INFO] Aborting {url} due to memory threshold.")
+            crawl_task.cancel()
+            raise MemoryError("Memory limit exceeded")
+
+        if crawl_task in done:
+            await crawl_task
+
+        presults = preprocess_crawler_data(results)
+        db.save_batch(presults)
+        results = {"crawledcontent": {}, "crawledlinks": set()}
+
+    except MemoryError as e:
+        print(f"[ERROR] {e}")
+        # Mark URL as visited or failed
+        # db.mark_as_visited(url, status="memory_limit_exceeded")
+        try:
+            await playwright.stop()
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"[ERROR] Unexpected error while crawling {url}: {e}")
+
+    finally:
+        memory_task.cancel()
+        stop_task.cancel()
+
 
 async def crawler(db):
     """
