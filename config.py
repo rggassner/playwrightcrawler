@@ -218,3 +218,12 @@ URL_REGEX_BLOCK_LIST = [
 
 MAX_URL_LENGTH = 4096
 
+MAX_MEMORY_MB = 6000
+CHECK_INTERVAL = 1.5
+
+
+# Empty content types happens when:
+# 1 - Memory error when trying to get url (file too big, or corrupted page)
+# 2 - Host doesn't exist
+# You should keep it False so the crawler won't rescan those problem scenarios
+REMOVE_EMPTY_CTYPE = False
