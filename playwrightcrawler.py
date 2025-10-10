@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 from collections import Counter
 from io import BytesIO
 import argparse
+import psutil
 import asyncio
 import fcntl
 import random
@@ -668,6 +669,7 @@ content_type_all_others_regex = [
         r"^application/x-blorb$",
         r"^application/java-vm$",
         r"^application/msgpack$",
+        r"^application/rsd\+xml$",
         r"^application/rfc\+xml$",
         r"^application/x-netcdf$",
         r"^application/gml\+xml$",
@@ -3362,7 +3364,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
     # --- Helper: setup and teardown ---
     async def setup_browser():
-        browser = await playwright.chromium.launch(headless=False)
+        browser = await playwright.chromium.launch(headless=True)
         context = await browser.new_context(user_agent=user_agent)
         page = await context.new_page()
         page.set_default_timeout(PAGE_TIMEOUT_MS)
@@ -3467,7 +3469,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     # --- Helper: extract data from HTML page ---
     async def extract_page_data(page, content_type):
         html_text = await safe_content(page) if is_html_content(content_type) else ""
-        links = await get_links_page(page, url) if is_html_content(content_type) else set()
+        links = await get_links_page(page, url) if is_html_content(content_type) else {}
         page_data["crawledlinks"].update(links)
 
         words = (
@@ -3531,11 +3533,6 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     results["crawledcontent"].update(page_data["crawledcontent"])
     results["crawledlinks"].update(page_data["crawledlinks"])
 
-import psutil
-import asyncio
-
-MAX_MEMORY_MB = 4000
-CHECK_INTERVAL = 1.5
 
 def total_memory_usage(process):
     mem = process.memory_info().rss
@@ -3543,17 +3540,18 @@ def total_memory_usage(process):
         mem += child.memory_info().rss
     return mem / (1024**2)  # MB
 
+
 async def monitor_memory(pid, url, stop_event):
     """Monitor memory usage and signal stop if threshold exceeded."""
     process = psutil.Process(pid)
     while not stop_event.is_set():
         await asyncio.sleep(CHECK_INTERVAL)
         mem_usage = total_memory_usage(process)
-        print(f"{mem_usage}")
         if mem_usage > MAX_MEMORY_MB:
-            print(f"[WARN] Memory usage {mem_usage:.1f}MB — aborting {url}")
+            print(f"\033[91m[WARN] Memory usage {mem_usage:.1f}MB — aborting {url}\033[0m")
             stop_event.set()
             return
+
 
 async def get_page(url, playwright, db):
     global results
@@ -3587,6 +3585,17 @@ async def get_page(url, playwright, db):
         print(f"[ERROR] {e}")
         # Mark URL as visited or failed
         # db.mark_as_visited(url, status="memory_limit_exceeded")
+        results["crawledcontent"].update({
+            url: {
+                "url": url,
+                "content_type": "",
+                "isopendir": False,
+                "visited": True,
+                "source": 'get_page_outofmemory',
+            }
+        })        
+        db.save_batch(results)
+        results = {"crawledcontent": {}, "crawledlinks": set()}
         try:
             await playwright.stop()
         except Exception:
@@ -3642,8 +3651,9 @@ async def main():
         instance = get_instance_number()
         for iteration in range(ITERATIONS):
             if instance == 1:
-                print(f"Instance {instance}, iteration {iteration}: Removing urls with empty content_type.")
-                remove_empty_content_type_from_es_db(db)
+                if REMOVE_EMPTY_CTYPE:
+                    print(f"Instance {instance}, iteration {iteration}: Removing urls with empty content_type.")
+                    remove_empty_content_type_from_es_db(db)
                 if REMOVE_BLOCKED_HOSTS:
                     print(f"Instance {instance}, iteration {iteration}: Removing urls from hosts that are blocklisted.")
                     remove_blocked_hosts_from_es_db(db)
