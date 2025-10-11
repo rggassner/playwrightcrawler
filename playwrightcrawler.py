@@ -2863,12 +2863,16 @@ async def content_type_images(args):
             }
 
 def get_directory_tree(url):
-    host = '://'.join(urlsplit(url)[:2])
-    dtree = []
-    parts = PurePosixPath(unquote(urlparse(url).path)).parts
-    for iter in range(1, len(parts[0:])):
-        dtree.append(str(host + '/' + '/'.join(parts[1:-iter])))
-    return dtree
+    try:
+        host = '://'.join(urlsplit(url)[:2])
+        dtree = []
+        parts = PurePosixPath(unquote(urlparse(url).path)).parts
+        for iter in range(1, len(parts[0:])):
+            dtree.append(str(host + '/' + '/'.join(parts[1:-iter])))
+        return dtree
+    except Exception as e:
+        print(f"[WARN] Skipping invalid URL in get_directory_tree(): {url} — {e}")
+        return []
 
 def is_url_block_listed(url):
     for regex in URL_REGEX_BLOCK_LIST:
@@ -3542,13 +3546,23 @@ def total_memory_usage(process):
 
 
 async def monitor_memory(pid, url, stop_event):
-    """Monitor memory usage and signal stop if threshold exceeded."""
+    """
+    Monitors total system memory usage and stops the current task 
+    if the host is under memory pressure.
+    """
     process = psutil.Process(pid)
     while not stop_event.is_set():
         await asyncio.sleep(CHECK_INTERVAL)
-        mem_usage = total_memory_usage(process)
-        if mem_usage > MAX_MEMORY_MB:
-            print(f"\033[91m[WARN] Memory usage {mem_usage:.1f}MB — aborting {url}\033[0m")
+        # Measure both process and system memory usage
+        system_mem = psutil.virtual_memory().percent  # total system memory usage in %
+        process_mem = process.memory_info().rss / (1024 * 1024)  # MB
+        if system_mem > MAX_MEMORY_PERCENT and process_mem > ATTENTION_MEMORY_MB:
+            print(f"\033[91m[WARN] System memory {system_mem:.1f}% and process_mem {process_mem} — aborting {url}\033[0m")
+            stop_event.set()
+            return
+        # Optional: Also kill if *this* process uses too much memory
+        if process_mem > MAX_MEMORY_MB :  # e.g., 6 GB
+            print(f"\033[91m[WARN] Process memory {process_mem:.1f}MB — aborting {url}\033[0m")
             stop_event.set()
             return
 
@@ -3583,8 +3597,6 @@ async def get_page(url, playwright, db):
 
     except MemoryError as e:
         print(f"[ERROR] {e}")
-        # Mark URL as visited or failed
-        # db.mark_as_visited(url, status="memory_limit_exceeded")
         results["crawledcontent"].update({
             url: {
                 "url": url,
@@ -3594,7 +3606,8 @@ async def get_page(url, playwright, db):
                 "source": 'get_page_outofmemory',
             }
         })        
-        db.save_batch(results)
+        presults = preprocess_crawler_data(results)
+        db.save_batch(presults)
         results = {"crawledcontent": {}, "crawledlinks": set()}
         try:
             await playwright.stop()
@@ -3602,7 +3615,7 @@ async def get_page(url, playwright, db):
             pass
 
     except Exception as e:
-        print(f"[ERROR] Unexpected error while crawling {url}: {e}")
+        print(f"[ERROR] Unexpected error while crawling {url}: {error_msg}")
 
     finally:
         memory_task.cancel()
