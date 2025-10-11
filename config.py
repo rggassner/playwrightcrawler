@@ -218,8 +218,18 @@ URL_REGEX_BLOCK_LIST = [
 
 MAX_URL_LENGTH = 4096
 
+# If a process uses more than this of RAM, it will skip to next url
+# This will also be the size of the largest downloaded file
 MAX_MEMORY_MB = 6000
-CHECK_INTERVAL = 1.5
+
+# If the total system hits more than MAX_MEMORY_PERCENT of RAM usage
+# and the process has more than ATTENTION_MEMORY_MB of RAM usage
+# it will skip to next url
+MAX_MEMORY_PERCENT = 90
+ATTENTION_MEMORY_MB = 2000
+
+# Time interval for memory checks
+CHECK_INTERVAL = 1.0
 
 
 # Empty content types happens when:
