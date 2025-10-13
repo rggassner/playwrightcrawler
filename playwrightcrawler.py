@@ -5,13 +5,12 @@ from pathlib import PurePosixPath
 from collections import Counter
 from io import BytesIO
 import argparse
-import psutil
 import asyncio
 import fcntl
 import random
 import hashlib
 import warnings
-import pprint
+#import pprint
 import re
 import os
 import httpx
@@ -19,6 +18,7 @@ import chardet
 import urllib3
 import absl.logging
 import numpy as np
+import psutil
 from fake_useragent import UserAgent
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
@@ -2871,7 +2871,7 @@ def get_directory_tree(url):
             dtree.append(str(host + '/' + '/'.join(parts[1:-iter])))
         return dtree
     except Exception as e:
-        print(f"[WARN] Skipping invalid URL in get_directory_tree(): {url} — {e}")
+        #print(f"[WARN] Skipping invalid URL in get_directory_tree(): {url} — {e}")
         return []
 
 def is_url_block_listed(url):
@@ -3409,7 +3409,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 resp = await client.get(url, headers=headers)
                 return sanitize_content_type(resp.headers.get("content-type", ""))
         except Exception as e:
-            print(f"[HTTPX fallback failed] {url}: {e}")
+            #print(f"[HTTPX fallback failed] {url}: {e}")
             return ""
 
     # --- Helper: handle responses from Playwright ---
@@ -3511,7 +3511,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     try:
         await page.goto(url, wait_until="domcontentloaded")
     except Exception as e:
-        print(f"Error while fetching {url}: {e}")
+        #print(f"Error while fetching {url}: {e}")
+        pass
     finally:
         await teardown_browser(browser, page, handler)
 
@@ -3568,7 +3569,40 @@ async def monitor_memory(pid, url, stop_event):
 
 
 async def get_page(url, playwright, db):
-    global results
+    """
+    Asynchronously crawls a single web page, monitors memory usage, and stores results.
+
+    This function orchestrates the lifecycle of crawling a URL using Playwright, 
+    while continuously monitoring system memory usage to prevent crashes caused 
+    by excessive resource consumption. It runs two concurrent tasks — the crawler 
+    itself and a memory monitor — and aborts the crawl safely if the memory threshold 
+    is exceeded.
+
+    On success, the crawled data is preprocessed and saved to the database.
+    On memory exhaustion, the function gracefully cancels the crawl, marks the URL 
+    as visited, and stores a minimal record to avoid reprocessing.
+
+    Args:
+        url (str): The target URL to crawl.
+        playwright: An active Playwright instance used for browser automation.
+        db: The database interface responsible for persisting crawl results.
+
+    Side Effects:
+        - Updates the global `results` variable with crawled content and links.
+        - Writes processed results to the database via `db.save_batch()`.
+        - Cancels background tasks upon completion or error.
+
+    Raises:
+        MemoryError: If memory usage exceeds the configured threshold during the crawl.
+        Exception: For any other unexpected errors during execution.
+
+    Notes:
+        - The function ensures that memory usage is constantly monitored through 
+          `monitor_memory()`, and cancels the crawl if the limit is hit.
+        - This design helps maintain crawler stability when handling large or 
+          unexpectedly heavy pages.
+    """    
+    global results # pylint: disable=global-statement
     pid = psutil.Process().pid
     stop_event = asyncio.Event()
     memory_task = asyncio.create_task(monitor_memory(pid, url, stop_event))
@@ -3578,7 +3612,7 @@ async def get_page(url, playwright, db):
         crawl_task = asyncio.create_task(get_page_async(url, playwright))
         stop_task = asyncio.create_task(stop_event.wait())
 
-        done, pending = await asyncio.wait(
+        done, _ = await asyncio.wait(
             [crawl_task, stop_task],
             return_when=asyncio.FIRST_COMPLETED
         )
@@ -3611,11 +3645,11 @@ async def get_page(url, playwright, db):
         results = {"crawledcontent": {}, "crawledlinks": set()}
         try:
             await playwright.stop()
-        except Exception:
+        except Exception: # pylint: disable=broad-exception-caught
             pass
 
-    except Exception as e:
-        print(f"[ERROR] Unexpected error while crawling {url}: {error_msg}")
+    except Exception as e: # pylint: disable=broad-exception-caught
+        print(f"[ERROR] Unexpected error while crawling {url}: {e}")
 
     finally:
         memory_task.cancel()
