@@ -244,6 +244,7 @@ content_type_image_regex = [
         r"^webpx$",
         r"^image/$",
         r"^img/png$",
+        r"^JPG_MIME$",
         r"^image/\*$",
         r"^img/jpeg$",
         r"^image/any$",
@@ -616,6 +617,7 @@ content_type_all_others_regex = [
         r"^application/cgi$",
         r"^text/javascript$",
         r"^application/xml$",
+        r"^application/aux$",
         r"^application/x-j$",
         r"^application/jwt$",
         r"^application/rtf$",
@@ -718,6 +720,7 @@ content_type_all_others_regex = [
         r"^application/vnd\.yt-ump$",
         r"^application/x-xpinstall$",
         r"^application/x-httpd-php$",
+        r"^application/link-format$",
         r"^application/x-directory$",
         r"^application/x-troff-man$",
         r"^application/mac-binhex40$",
@@ -3540,10 +3543,33 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
 
 def total_memory_usage(process):
+    """
+    Calculate the total memory usage of a process and all its child processes.
+
+    This function retrieves the Resident Set Size (RSS) — the portion of memory 
+    held in RAM — for the given process and recursively includes all of its 
+    child processes. The result is the total physical memory currently consumed 
+    by the process tree.
+
+    Args:
+        process (psutil.Process): 
+            A `psutil.Process` instance representing the root process to measure.
+
+    Returns:
+        float: 
+            The total memory usage in megabytes (MB), including the process 
+            and all its child processes.
+
+    Notes:
+        - Uses `process.memory_info().rss` to measure memory resident in RAM.
+        - Recursively includes all subprocesses spawned by the main process.
+        - Ideal for monitoring multi-process applications that 
+          may spawn instances or worker threads.
+    """    
     mem = process.memory_info().rss
     for child in process.children(recursive=True):
         mem += child.memory_info().rss
-    return mem / (1024**2)  # MB
+    return mem / (1024**2)  #MB
 
 
 async def monitor_memory(pid, url, stop_event):
