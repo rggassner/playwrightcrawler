@@ -3371,8 +3371,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
     # --- Helper: setup and teardown ---
     async def setup_browser():
-        browser = await playwright.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=user_agent)
+        browser = await playwright.chromium.launch(headless=True )
+        context = await browser.new_context(user_agent=user_agent, ignore_https_errors=True,)
         page = await context.new_page()
         page.set_default_timeout(PAGE_TIMEOUT_MS)
         return browser, page
@@ -3399,7 +3399,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 await page.wait_for_load_state("networkidle")
 
             return ctype
-        except Exception:
+        except Exception as e:
+            print(f"{e}")
             return None
 
     # --- Helper: fallback using httpx ---
@@ -3508,14 +3509,15 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     #html_text, links, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
     _, _, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
 
-    handler = lambda response: asyncio.create_task(handle_response(response))
+    def handler(response):
+        asyncio.create_task(handle_response(response))
+
     page.on("response", handler)
 
     try:
         await page.goto(url, wait_until="domcontentloaded")
-    except Exception as e:
-        #print(f"Error while fetching {url}: {e}")
-        pass
+    except Exception as e: # pylint: disable=broad-exception-caught
+        print(f"Error while fetching {url}: {e}")
     finally:
         await teardown_browser(browser, page, handler)
 
@@ -3671,11 +3673,11 @@ async def get_page(url, playwright, db):
         results = {"crawledcontent": {}, "crawledlinks": set()}
         try:
             await playwright.stop()
-        except Exception: # pylint: disable=broad-exception-caught
-            pass
+        except Exception as ie: # pylint: disable=broad-exception-caught
+            print(f"3675 {ie}")
 
     except Exception as e: # pylint: disable=broad-exception-caught
-        print(f"[ERROR] Unexpected error while crawling {url}: {e}")
+        print(f"3678 [ERROR] Unexpected error while crawling {url}: {e}")
 
     finally:
         memory_task.cancel()
