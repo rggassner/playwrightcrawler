@@ -3371,7 +3371,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
     # --- Helper: setup and teardown ---
     async def setup_browser():
-        browser = await playwright.chromium.launch(headless=True )
+        browser = await playwright.chromium.launch(headless=True)
         context = await browser.new_context(user_agent=user_agent, ignore_https_errors=True,)
         page = await context.new_page()
         page.set_default_timeout(PAGE_TIMEOUT_MS)
@@ -3383,6 +3383,28 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
     # --- Helper: crawl with or without scroll ---
     async def crawl(page, scroll: bool = False):
+        """
+        Navigate to the given URL within the provided Playwright page context 
+        and return its detected content type.
+
+        This helper performs a controlled page load sequence:
+        - Loads the page using `page.goto()` and waits for the `domcontentloaded` event.
+        - Normalizes the `Content-Type` header if present.
+        - Optionally scrolls through the page to trigger lazy loading (if `scroll=True`).
+        - Waits until the network becomes idle to ensure all async JS requests complete.
+        - Adds a short post-idle delay (3 seconds) to catch late-loading dynamic content.
+
+        Args:
+            page (playwright.async_api.Page): The Playwright page instance to navigate.
+            scroll (bool, optional): Whether to auto-scroll the page to trigger lazy content. Defaults to False.
+
+        Returns:
+            str | None: The sanitized content type of the loaded page, or None if loading failed.
+
+        Notes:
+            - If the response is missing or invalid, the function logs a warning and returns None.
+            - The 3-second delay helps capture JS-rendered elements that appear slightly after `networkidle`.
+        """        
         try:
             response = await page.goto(url, wait_until="domcontentloaded")
             if not response:
@@ -3397,6 +3419,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 await auto_scroll(page)
             if is_html_content(ctype):
                 await page.wait_for_load_state("networkidle")
+                await asyncio.sleep(3)
 
             return ctype
         except Exception as e:
@@ -3466,8 +3489,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                                 'parent_host': parent_host
                             })
                             page_data["crawledcontent"].update(urlresult)
-                        except Exception:
-                            pass
+                        except Exception as e: # pylint: disable=broad-exception-caught
+                            print(f"3493 {e}")
                 if not found:
                     print(f"\033[91mUNKNOWN type -{rurl}- -{ctype}-\033[0m")
         except Exception as e:
