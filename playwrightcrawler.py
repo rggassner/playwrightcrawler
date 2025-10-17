@@ -240,6 +240,7 @@ content_type_image_regex = [
         r"^jpeg$",
         r"^webp$",
         r"^image$",
+        r"^PNG32$",
         r"^.jpeg$",
         r"^webpx$",
         r"^image/$",
@@ -249,6 +250,7 @@ content_type_image_regex = [
         r"^img/jpeg$",
         r"^image/any$",
         r"^image/bmp$",
+        r"^video/png$",
         r"^image/cgm$",
         r"^image/dpx$",
         r"^image/emf$",
@@ -272,6 +274,7 @@ content_type_image_regex = [
         r"^image/t38$",
         r"^image/wmf$",
         r"^image/jpeg$",
+        r"^image/jpqg$",
         r"^image/jphc$",
         r"^image/jxrA$",
         r"^image/aces$",
@@ -279,6 +282,7 @@ content_type_image_regex = [
         r"^image/avci$",
         r"^image/avcs$",
         r"^image/avif$",
+        r"^iamge/avif$",
         r"^image/fits$",
         r"^image/heic$",
         r"^image/heif$",
@@ -294,6 +298,7 @@ content_type_image_regex = [
         r"^image/tiff$",
         r"^image/webp$",
         r"^(null)/ico$",
+        r"^image/xicon$",
         r"^image/g3fax$",
         r"^image/hej2k$",
         r"^image/pjpeg$",
@@ -450,10 +455,13 @@ content_type_pdf_regex = [
         r"^adobe/pdf$",
         r"^image/pdf$",
         r"^application/pdf$",
+        r"^,application/pdf$",
         r"^application/\.pdf$",
         r"^application/x-pdf$",
         r"^application/pdfcontent-length:",
         r"^application/x-www-form-urlencoded,",
+        r"^application/pdf,application/pdf$",
+        r"^binary/octet-stream,application/pdf$",
     ]
 
 content_type_doc_regex = [
@@ -507,6 +515,7 @@ content_type_font_regex = [
         r"^font/otf$",
         r"^file/woff$",
         r"^font/sfnt$",
+        r"^text/woff$",
         r"^image/otf$",
         r"^font/woff$",
         r"^x-font/ttf$",
@@ -598,6 +607,7 @@ content_type_all_others_regex = [
         r"^model/obj$",
         r"^model/step$",
         r"^test/plain$",
+        r"^javascript$",
         r"^text/x-scss$",
         r"^application$",
         r"^Content-Type$",
@@ -765,7 +775,9 @@ content_type_all_others_regex = [
         r"^application/x-mobipocket-ebook$",
         r"^application/vnd\.ms-powerpoint$",
         r"^application/sparql-results\+xml$",
+        r"^application/vnd\.sas\.api\+json$",
         r"^application/vnd\.openxmlformats$",
+        r"^application/vnd\.apple\.keynote$",
         r"^application/apple\.vnd\.mpegurl$",
         r"^application/vnd\.wv\.csp\+wbxml$",
         r"^application/x-ms-dos-executable$",
@@ -3451,7 +3463,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
             try:
                 body_bytes_local = await response.body()
-            except Exception:
+            except Exception as e: # pylint: disable=broad-exception-caught
+                print(f"3467 {e}")
                 return
 
             content = ""
@@ -3459,7 +3472,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 encoding = chardet.detect(body_bytes_local)["encoding"] or "utf-8"
                 try:
                     content = body_bytes_local.decode(encoding, errors="replace")
-                except Exception:
+                except Exception as e: # pylint: disable=broad-exception-caught
+                    print(f"3474 {e}")
                     content = ""
 
             if ctype:
@@ -3493,8 +3507,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                             print(f"3493 {e}")
                 if not found:
                     print(f"\033[91mUNKNOWN type -{rurl}- -{ctype}-\033[0m")
-        except Exception as e:
-            print(f"Error handling response: {e}")
+        except Exception as e: # pylint: disable=broad-exception-caught
+            print(f"3511 Error handling response: {e}")
 
 
     # --- Helper: extract data from HTML page ---
