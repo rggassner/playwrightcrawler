@@ -3376,7 +3376,61 @@ def is_html_content(content_type: str) -> bool:
     )
 
 
-async def get_page_async(url: str, playwright): # pylint: disable=too-many-statements
+async def get_page_async(url: str, playwright): # pylint: disable=too-many-statements,too-many-locals
+    """
+    Asynchronously crawls a web page using Playwright, extracts content, and processes linked resources.
+
+    This function performs a full asynchronous crawl of a given URL with multiple fallback and parsing stages.
+    It leverages Playwright for dynamic content rendering and integrates auxiliary async functions for
+    content-type analysis, word and link extraction, and open directory detection.
+
+    Workflow overview:
+        1. **Browser setup** — Launches a headless Chromium instance with a random user agent.
+        2. **Page load (crawl)** — Attempts to load the target URL (first without scrolling, then with scrolling)
+           and determines the normalized `Content-Type`.
+        3. **HTTPX fallback** — If Playwright fails to detect the content type, performs a lightweight
+           async HTTP request using `httpx` as a backup.
+        4. **Response handling** — Asynchronously intercepts and processes all responses using a `response` listener,
+           invoking type-specific functions from `content_type_functions` when applicable.
+        5. **Content extraction** — Optionally extracts HTML text, hyperlinks, keywords, minimal and raw
+           web content, and detects open directory listings.
+        6. **Cleanup** — Closes all Playwright contexts and removes listeners safely.
+
+    The function updates two global dictionaries:
+        - `results["crawledcontent"]`: Contains structured page metadata and extracted content.
+        - `results["crawledlinks"]`: Contains discovered hyperlinks for potential future crawling.
+
+    Args:
+        url (str): The target URL to crawl.
+        playwright: An active Playwright instance used to launch Chromium.
+
+    Returns:
+        None: This function does not return a value directly. Instead, it updates the global `results`
+        dictionary with two main components:
+            - `results["crawledcontent"][url]`: A structured object including:
+                - `"url"`: The crawled URL.
+                - `"content_type"`: The normalized content type string.
+                - `"isopendir"` / `"opendir_pattern"`: Flags and regex patterns if an open directory is detected.
+                - `"words"`: Extracted text tokens (if `EXTRACT_WORDS` is enabled).
+                - `"raw_webcontent"` / `"min_webcontent"`: Extracted raw and minimized HTML segments.
+                - `"visited"`: Boolean indicating the URL was successfully processed.
+                - `"parent_host"`: The host domain of the original URL.
+                - `"source"`: Always `'get_page_async'`.
+            - `results["crawledlinks"]`: A set of newly discovered URLs found in the HTML.
+
+    Raises:
+        Exception: All internal exceptions are caught and logged, ensuring that a single failure does not
+        interrupt the crawl process. The function prints contextual error messages instead of raising errors.
+
+    Notes:
+        - The function employs several internal helpers (`setup_browser`, `crawl`, `handle_response`, etc.)
+          that encapsulate specific stages of the crawl pipeline.
+        - Scroll-based loading is automatically retried if the initial page load lacks content type.
+        - To avoid blocking, response handling is scheduled via `asyncio.create_task()` for each intercepted response.
+        - Playwright’s `ignore_https_errors=True` is used to bypass invalid certificates.
+        - The crawler is designed to support modular extension via `content_type_functions`, which map
+          regex patterns of content types to custom async handlers.
+    """    
     user_agent = ua.random
     parent_host = urlsplit(url)[1]
     page_data = {"crawledcontent": {}, "crawledlinks": set()}
@@ -3434,8 +3488,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 await asyncio.sleep(3)
 
             return ctype
-        except Exception as e:
-            print(f"{e}")
+        except Exception as e: # pylint: disable=broad-exception-caught
+            print(f"3438 {e}")
             return None
 
     # --- Helper: fallback using httpx ---
@@ -3447,8 +3501,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
             ) as client:
                 resp = await client.get(url, headers=headers)
                 return sanitize_content_type(resp.headers.get("content-type", ""))
-        except Exception as e:
-            #print(f"[HTTPX fallback failed] {url}: {e}")
+        except Exception as e: # pylint: disable=broad-exception-caught
+            print(f"[HTTPX fallback failed] 3451 {url}: {e}")
             return ""
 
     # --- Helper: handle responses from Playwright ---
