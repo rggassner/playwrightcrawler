@@ -145,14 +145,14 @@ MAX_URLS_FROM_FILE = 100
 ITERATIONS = 10000
 
 #How many urls for every method
-RANDOM_SITES_QUEUE = 100
+RANDOM_SITES_QUEUE = 10000
 
 # Weighs used to pick methods
 METHOD_WEIGHTS = {
     "fewest_urls":  1,
     "oldest":       1,
     "host_prefix":  10,
-    "random":       10
+    "random":       5
 }
 
 # -----------------------------
@@ -196,10 +196,10 @@ STRICT_EXTENSION_QUERY = True
 REMOVE_INVALID_URLS = True
     
 # If urls that are blocked based on host should be removed from the database.
-REMOVE_BLOCKED_HOSTS = True
+REMOVE_BLOCKED_HOSTS = False
     
 # If urls that are blocked based on path should be deleted from the database.
-REMOVE_BLOCKED_URLS = True
+REMOVE_BLOCKED_URLS = False
 
 # Do not crawl these domains.
 HOST_REGEX_BLOCK_LIST = [
@@ -237,3 +237,7 @@ CHECK_INTERVAL = 1.0
 # 2 - Host doesn't exist
 # You should keep it False so the crawler won't rescan those problem scenarios
 REMOVE_EMPTY_CTYPE = False
+
+
+DEBUG_PW = False
+DEBUG_HTTPX = False
