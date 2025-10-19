@@ -16,9 +16,11 @@ import os
 import httpx
 import chardet
 import urllib3
+import logging
 import absl.logging
 import numpy as np
 import psutil
+from absl import logging as absl_logging
 from fake_useragent import UserAgent
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
@@ -27,6 +29,7 @@ from playwright.async_api import async_playwright
 from urllib3.exceptions import InsecureRequestWarning
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 from config import *
+
 
 
 
@@ -39,6 +42,7 @@ warnings.filterwarnings(
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+
 ua = UserAgent()
 
 if CATEGORIZE_NSFW:
@@ -50,6 +54,7 @@ soup_tag_blocklist = {"script", "style", "noscript", "iframe", "meta", "head", "
 url_functions = []
 content_type_functions = []
 results = {"crawledcontent": {}, "crawledlinks": set()}
+
 
 
 content_type_octetstream = [
@@ -949,6 +954,7 @@ EXTENSION_MAP = {
         ".wmv": content_type_video_regex,
     }
 
+
 def db_create_monthly_indexes(db=None):
     if db is None or db.es is None:  # <- changed from db.con
         raise ValueError("db connection is required")
@@ -1273,7 +1279,7 @@ def preprocess_crawler_data(data: dict) -> dict:
                     filtered_links[normalized_url] = host 
 
         except Exception as e:
-            print(f"[WARN] Failed to normalize {url}: {e}")
+            print(f"[PREPROCESS_CRAWLER_DATA NORMALIZATION] Failed to normalize {url}: {e}")
             continue    
 
     for url, doc in crawledcontent.items():
@@ -3489,7 +3495,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
             return ctype
         except Exception as e: # pylint: disable=broad-exception-caught
-            print(f"3438 {e}")
+            if DEBUG_PW:
+                print(f"[CRAWL] {e}")
             return None
 
     # --- Helper: fallback using httpx ---
@@ -3502,7 +3509,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 resp = await client.get(url, headers=headers)
                 return sanitize_content_type(resp.headers.get("content-type", ""))
         except Exception as e: # pylint: disable=broad-exception-caught
-            print(f"[HTTPX fallback failed] 3451 {url}: {e}")
+            if DEBUG_HTTPX:
+                print(f"[HTTPX fallback failed] {url}: {e}")
             return ""
 
     # --- Helper: handle responses from Playwright ---
@@ -3518,7 +3526,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
             try:
                 body_bytes_local = await response.body()
             except Exception as e: # pylint: disable=broad-exception-caught
-                print(f"3467 {e}")
+                if DEBUG_PW:
+                    print(f"[HANDLE_RESPONSE reading body_bytes_local ] {e}")
                 return
 
             content = ""
@@ -3608,7 +3617,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     try:
         await page.goto(url, wait_until="domcontentloaded")
     except Exception as e: # pylint: disable=broad-exception-caught
-        print(f"Error while fetching {url}: {e}")
+        if DEBUG_PW:
+            print(f"[GET_PAGE_ASYNC] Error while fetching {url}: {e}")
     finally:
         await teardown_browser(browser, page, handler)
 
@@ -3788,7 +3798,6 @@ async def crawler(db):
         except UnicodeEncodeError:
             pass
 
-
 async def main():
     """
     Crawler main function
@@ -3841,6 +3850,7 @@ async def main():
                 print(f"Instance {instance}, iteration {iteration}: Running full crawler.")
                 await crawler(db)
         db.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
