@@ -1,35 +1,34 @@
 #!venv/bin/python3
-from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
+import sys
+import os
+import re
+import asyncio
+import argparse
 from datetime import datetime, timezone
+from io import BytesIO
+from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
 from pathlib import PurePosixPath
 from collections import Counter
-from io import BytesIO
-import argparse
-import asyncio
-import fcntl
 import random
 import hashlib
 import warnings
-#import pprint
-import re
-import os
+import fcntl
+
 import httpx
-import chardet
 import urllib3
-import logging
-import absl.logging
+import chardet
 import numpy as np
 import psutil
-from absl import logging as absl_logging
 from fake_useragent import UserAgent
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
 from PIL import Image, UnidentifiedImageError
-from playwright.async_api import async_playwright
-from urllib3.exceptions import InsecureRequestWarning
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
-from config import *
+from playwright.async_api import async_playwright, Error as PlaywrightError
+import absl.logging
+from urllib3.exceptions import InsecureRequestWarning
 
+from config import *
 
 
 
@@ -925,6 +924,7 @@ EXTENSION_MAP = {
         ".pbf": content_type_image_regex,
         ".png": content_type_image_regex,
         ".PNG": content_type_image_regex,
+        ".pnj": content_type_image_regex,
         ".psd": content_type_image_regex,
         ".svg": content_type_image_regex,
         ".t38": content_type_image_regex,
@@ -3264,7 +3264,7 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
 
                     async def sem_task(url):
                         async with semaphore:
-                            return await fast_extension_crawler(url, extension, content_type_patterns, db, playwright)
+                            return await fast_extension_crawler(url, content_type_patterns, db, playwright)
 
                     tasks = [sem_task(url) for url in unique_urls]
                     batch_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -3295,7 +3295,7 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
                 pass
 
 
-async def fast_extension_crawler(url, extension, content_type_patterns, db, playwright):  # 👈 added playwright
+async def fast_extension_crawler(url, content_type_patterns, db, playwright):
     headers = {"User-Agent": UserAgent().random}
 
     try:
@@ -3374,8 +3374,21 @@ async def fast_extension_crawler(url, extension, content_type_patterns, db, play
     await asyncio.sleep(random.uniform(FAST_RANDOM_MIN_WAIT, FAST_RANDOM_MAX_WAIT))
 
 
-
 def is_html_content(content_type: str) -> bool:
+    """
+    Check whether a given Content-Type value corresponds to HTML content.
+
+    This function compares the provided MIME type string (e.g., "text/html", 
+    "application/xhtml+xml") against a list of regular expression patterns 
+    defined in `content_type_html_regex`. The comparison is case-insensitive.
+
+    Args:
+        content_type (str): The Content-Type header value to check.
+
+    Returns:
+        bool: True if the content type matches any HTML-related pattern, 
+              False otherwise.
+    """    
     return any(
         re.match(pattern, content_type, re.IGNORECASE)
         for pattern in content_type_html_regex
@@ -3777,8 +3790,32 @@ async def get_page(url, playwright, db):
         except Exception as ie: # pylint: disable=broad-exception-caught
             print(f"3675 {ie}")
 
-    except Exception as e: # pylint: disable=broad-exception-caught
-        print(f"3678 [ERROR] Unexpected error while crawling {url}: {e}")
+    except PlaywrightError as e:
+        if "Target page, context or browser has been closed" in str(e):
+            print(f"[GET_PAGE Fatal] Browser closed unexpectedly while crawling {url}")
+            results["crawledcontent"].update({
+                url: {
+                    "url": url,
+                    "content_type": "",
+                    "isopendir": False,
+                    "visited": True,
+                    "source": 'get_page_browser_closed',
+                }
+            })
+            presults = preprocess_crawler_data(results)
+            db.save_batch(presults)
+            results = {"crawledcontent": {}, "crawledlinks": set()}
+            try:
+                await playwright.stop()
+            except Exception as ie: # pylint: disable=broad-exception-caught
+                print(f"3798 ---------------------------------------------  {ie}")
+            sys.exit()
+        else:
+            print(f"3801 [PLAYWRIGHT] Error while crawling {url}: {e}")
+            return None
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        print(f"3804 [ERROR] Unexpected error while crawling {url}: {e}")
+        return None
 
     finally:
         memory_task.cancel()
