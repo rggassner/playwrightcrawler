@@ -473,6 +473,8 @@ content_type_doc_regex = [
         r"^application/xls$",
         r"^application/xlsx$",
         r"^application/docx$",
+        r"^application/x-cbr$",
+        r"^application/x-cbz$",
         r"^application/msword$",
         r"^application/msexcel$",
         r"^application/ms-excel$",
@@ -651,7 +653,6 @@ content_type_all_others_regex = [
         r"^application/x-sh$",
         r"^text/x-javascript$",
         r"^application/empty$",
-        r"^application/x-cbr$",
         r"^text/plaincharset:",
         r"^chemical/x-cerius$",
         r"^text/css,text/css$",
@@ -1715,842 +1716,219 @@ async def content_type_plain_text(args):
         "parent_host": args['parent_host'] }
     }
 
-@function_for_content_type(content_type_font_regex)
-async def content_type_fonts(args):
+
+async def handle_content_type(
+    args,
+    download_flag,
+    regex,
+    folder,
+    default_name,
+    type_label,
+):
+    """
+    Generic handler for saving downloaded files of various content types.
+    Reduces boilerplate between PDFs, DOCs, DBs, etc.
+    """
+
     url = args.get("url")
     content_type = args.get("content_type")
     parent_host = args.get("parent_host")
     raw_content = args.get("raw_content")
 
-    if DOWNLOAD_FONTS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_font_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
+    if not download_flag:
+        # Skipping download by configuration
+        return {
+            url: {
+                "url": url,
+                "content_type": content_type,
+                "source": f"content_type_{type_label}",
+                "isopendir": False,
+                "visited": True,
+                "parent_host": parent_host,
             }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "font"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-
-            if EXTENSION_MAP.get(ext) is not content_type_font_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP FONT] Extension '{ext}' not mapped to font regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "font"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(FONTS_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_font_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_font_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_font",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
         }
-    }
+
+    if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
+        results["crawledlinks"].add(url)
+        return {
+            url: {
+                "url": url,
+                "content_type": content_type,
+                "source": f"content_type_{type_label}_empty",
+                "isopendir": False,
+                "visited": True,
+                "parent_host": parent_host,
+            }
+        }
+
+    try:
+        base_filename = os.path.basename(urlparse(url).path) or default_name
+        try:
+            decoded_name = unquote(base_filename)
+        except Exception:
+            decoded_name = base_filename
+
+        name_part, ext = os.path.splitext(decoded_name)
+
+        if EXTENSION_MAP.get(ext) is not regex:
+            if not is_octetstream(content_type):
+                print(
+                    f"\033[94m[SKIP {type_label.upper()}] "
+                    f"Extension '{ext}' not mapped to {type_label} regex ({content_type}). URL={url}\033[0m"
+                )
+            return {}
+
+        # Sanitize
+        name_part = re.sub(r"[^\w\-.]", "_", name_part) or default_name
+        ext = re.sub(r"[^\w\-.]", "_", ext)
+
+        # Hash prefix
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
+        if len(name_part) > max_name_length:
+            name_part = name_part[: max_name_length - 3] + "..."
+
+        safe_filename = f"{url_hash}-{name_part}{ext}"
+        filepath = os.path.join(folder, safe_filename)
+
+        # Write safely
+        with open(filepath, "wb") as f:
+            f.write(raw_content)
+
+        return {
+            url: {
+                "url": url,
+                "content_type": content_type,
+                "source": f"content_type_{type_label}_download",
+                "isopendir": False,
+                "visited": True,
+                "parent_host": parent_host,
+                "filename": safe_filename,
+            }
+        }
+
+    except Exception as e:
+        print(f"\033[91m[ERROR {type_label.upper()}] {url}: {e}\033[0m")
+        return {
+            url: {
+                "url": url,
+                "content_type": content_type,
+                "source": f"content_type_{type_label}_failed",
+                "isopendir": False,
+                "visited": True,
+                "parent_host": parent_host,
+            }
+        }
+
+@function_for_content_type(content_type_font_regex)
+async def content_type_fonts(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_FONTS,
+        content_type_font_regex,
+        FONTS_FOLDER,
+        "font",
+        "font",
+    )
+
 
 @function_for_content_type(content_type_video_regex)
 async def content_type_videos(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
+    return await handle_content_type(
+        args,
+        DOWNLOAD_VIDEOS,
+        content_type_video_regex,
+        VIDEOS_FOLDER,
+        "video",
+        "video",
+    )
 
-    if DOWNLOAD_VIDEOS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_video_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
+@function_for_content_type(content_type_audio_regex)
+async def content_type_audios(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_AUDIOS,
+        content_type_audio_regex,
+        AUDIOS_FOLDER,
+        "audio",
+        "audio",
+    )
 
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "video"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
+@function_for_content_type(content_type_pdf_regex)
+async def content_type_pdfs(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_PDFS,
+        content_type_pdf_regex,
+        PDFS_FOLDER,
+        "pdf",
+        "pdf",
+    )
 
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
+@function_for_content_type(content_type_doc_regex)
+async def content_type_docs(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_DOCS,
+        content_type_doc_regex,
+        DOCS_FOLDER,
+        "doc",
+        "doc",
+    )
 
-            if EXTENSION_MAP.get(ext) is not content_type_video_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP VIDEO] Extension '{ext}' not mapped to video regex ({content_type}). URL={url}\033[0m")
-                return {}
+@function_for_content_type(content_type_database_regex)
+async def content_type_databases(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_DATABASES,
+        content_type_database_regex,
+        DATABASES_FOLDER,
+        "database",
+        "database",
+    )
 
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "video"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
 
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
+@function_for_content_type(content_type_torrent_regex)
+async def content_type_torrents(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_TORRENTS,
+        content_type_torrent_regex,
+        TORRENTS_FOLDER,
+        "torrent",
+        "torrent",
+    )
 
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(VIDEOS_FOLDER, safe_filename)
 
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
+@function_for_content_type(content_type_compressed_regex)
+async def content_type_compresseds(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_COMPRESSEDS,
+        content_type_compressed_regex,
+        COMPRESSEDS_FOLDER,
+        "compressed",
+        "compressed",
+    )
 
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_video_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
 
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_video_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
+@function_for_content_type(content_type_midi_regex)
+async def content_type_midis(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_MIDIS,
+        content_type_midi_regex,
+        MIDIS_FOLDER,
+        "midi",
+        "midi",
+    )
 
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_video",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
 
 def is_octetstream(content_type: str) -> bool:
     for pattern in content_type_octetstream:
         if re.match(pattern, content_type, re.IGNORECASE):
             return True
     return False
-
-@function_for_content_type(content_type_midi_regex)
-async def content_type_midis(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
-
-    if DOWNLOAD_MIDIS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_midi_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "midi"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-            if EXTENSION_MAP.get(ext) is not content_type_midi_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP MIDI] Extension '{ext}' not mapped to midi regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "midi"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(MIDIS_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_midi_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_midi_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_midi",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
-
-@function_for_content_type(content_type_audio_regex)
-async def content_type_audios(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
-
-    if DOWNLOAD_AUDIOS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_audio_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "audio"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-            if EXTENSION_MAP.get(ext) is not content_type_audio_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP AUDIO] Extension '{ext}' not mapped to audio regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "audio"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(AUDIOS_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_audio_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_audio_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_audio",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
-
-@function_for_content_type(content_type_pdf_regex)
-async def content_type_pdfs(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
-
-    if DOWNLOAD_PDFS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_pdf_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "pdf"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-            if EXTENSION_MAP.get(ext) is not content_type_pdf_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP PDF] Extension '{ext}' not mapped to pdf regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "pdf"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(PDFS_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_pdf_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_pdf_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_pdf",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
-
-
-@function_for_content_type(content_type_doc_regex)
-async def content_type_docs(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
-
-    if DOWNLOAD_DOCS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_doc_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "doc"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-            if EXTENSION_MAP.get(ext) is not content_type_doc_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP DOC] Extension '{ext}' not mapped to doc regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "doc"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(DOCS_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_doc_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_doc_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_doc",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
-
-@function_for_content_type(content_type_database_regex)
-async def content_type_databases(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
-
-    if DOWNLOAD_DATABASES:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_database_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "database"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-            if EXTENSION_MAP.get(ext) is not content_type_database_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP DATABASE] Extension '{ext}' not mapped to database regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "database"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(DATABASES_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_database_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_database_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_database",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
-
-
-@function_for_content_type(content_type_torrent_regex)
-async def content_type_torrents(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
-
-    if DOWNLOAD_TORRENTS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_torrent_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "torrent"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-            if EXTENSION_MAP.get(ext) is not content_type_torrent_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP TORRENT] Extension '{ext}' not mapped to torrent regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "torrent"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(TORRENTS_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_torrent_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_torrent_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_torrent",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
-
-@function_for_content_type(content_type_compressed_regex)
-async def content_type_compresseds(args):
-    url = args.get("url")
-    content_type = args.get("content_type")
-    parent_host = args.get("parent_host")
-    raw_content = args.get("raw_content")
-
-    if DOWNLOAD_COMPRESSEDS:
-        if not raw_content or not isinstance(raw_content, (bytes, bytearray)):
-            # Skip saving if no valid content
-            results["crawledlinks"].add(url)
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_compressed_empty",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-
-        try:
-            # Decode filename
-            base_filename = os.path.basename(urlparse(url).path) or "compressed"
-            try:
-                decoded_name = unquote(base_filename)
-            except Exception:
-                decoded_name = base_filename
-
-            # Split extension
-            name_part, ext = os.path.splitext(decoded_name)
-
-            if EXTENSION_MAP.get(ext) is not content_type_compressed_regex:
-                if not is_octetstream(content_type):
-                    print(f"\033[94m[SKIP COMPRESSED] Extension '{ext}' not mapped to compressed regex ({content_type}). URL={url}\033[0m")
-                return {}
-
-            # Sanitize
-            name_part = re.sub(r"[^\w\-.]", "_", name_part) or "compressed"
-            ext = re.sub(r"[^\w\-.]", "_", ext)
-
-            # Hash prefix
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            max_name_length = MAX_FILENAME_LENGTH - len(url_hash) - 1 - len(ext)
-            if len(name_part) > max_name_length:
-                name_part = name_part[: max_name_length - 3] + "..."
-
-            safe_filename = f"{url_hash}-{name_part}{ext}"
-            filepath = os.path.join(COMPRESSEDS_FOLDER, safe_filename)
-
-            # Write safely (only if we really have bytes)
-            if raw_content and isinstance(raw_content, (bytes, bytearray)):
-                with open(filepath, "wb") as f:
-                    f.write(raw_content)
-
-                return {
-                    url: {
-                        "url": url,
-                        "content_type": content_type,
-                        "source": "content_type_compressed_download",
-                        "isopendir": False,
-                        "visited": True,
-                        "parent_host": parent_host,
-                        "filename": safe_filename,
-                    }
-                }
-            else:
-                raise ValueError("raw_content is not bytes")
-
-        except Exception as e:
-            return {
-                url: {
-                    "url": url,
-                    "content_type": content_type,
-                    "source": "content_type_compressed_failed",
-                    "isopendir": False,
-                    "visited": True,
-                    "parent_host": parent_host,
-                }
-            }
-    return {
-        url: {
-            "url": url,
-            "content_type": content_type,
-            "source": "content_type_compressed",
-            "isopendir": False,
-            "visited": True,
-            "parent_host": parent_host,
-        }
-    }
 
 
 @function_for_content_type(content_type_html_regex)
@@ -3295,77 +2673,105 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
                 pass
 
 
+# pylint: disable=too-many-branches
 async def fast_extension_crawler(url, content_type_patterns, db, playwright):
     headers = {"User-Agent": UserAgent().random}
 
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=10.0), verify=False, headers=headers, follow_redirects=True) as client:
-            head_resp = await client.head(url)        
-    except Exception:
-        await get_page(url, playwright, db)  # 👈 reuse, not reopen
-        return
-
-    if not (200 <= head_resp.status_code < 300):
+    async def fallback():
         await get_page(url, playwright, db)
         return
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=10.0),
+            verify=False,
+            headers=headers,
+            follow_redirects=True,
+        ) as client:
+            head_resp = await client.head(url)
+    except Exception:
+        return await fallback()
+
+    if not (200 <= head_resp.status_code < 300):
+        return await fallback()
 
     print(f"-{url}-")
 
     content_type = head_resp.headers.get("Content-Type", "")
     if not content_type:
-        await get_page(url, playwright, db)
-        return
+        return await fallback()
 
     content_type = content_type.lower().split(";")[0].strip()
-    if not any(re.match(pattern, content_type) for pattern in content_type_patterns):
-        if content_type not in ['text/html','text/plain','application/json','text/javascript']:
-            print(f"\033[92m[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-\033[0m")
-        await get_page(url, playwright, db)
+
+    if not any(re.match(p, content_type) for p in content_type_patterns):
+        if content_type not in {
+            "text/html",
+            "text/plain",
+            "application/json",
+            "text/javascript",
+        }:
+            print(
+                f"\033[92m[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-\033[0m"
+            )
+        return await fallback()
+
+    host = urlparse(url).hostname or ""
+    if (
+        is_host_block_listed(host)
+        or not is_host_allow_listed(host)
+        or is_url_block_listed(url)
+    ):
         return
 
+    # --- Lookup download flags by function name ---
+    download_flags = {
+        "content_type_audios": DOWNLOAD_AUDIOS,
+        "content_type_compresseds": DOWNLOAD_COMPRESSEDS,
+        "content_type_databases": DOWNLOAD_DATABASES,
+        "content_type_docs": DOWNLOAD_DOCS,
+        "content_type_fonts": DOWNLOAD_FONTS,
+        "content_type_images": DOWNLOAD_SFW or DOWNLOAD_NSFW or DOWNLOAD_ALL_IMAGES,
+        "content_type_midis": DOWNLOAD_MIDIS,
+        "content_type_pdfs": DOWNLOAD_PDFS,
+        "content_type_torrents": DOWNLOAD_TORRENTS,
+    }
+
     try:
-        host = urlparse(url).hostname or ""
-        if is_host_block_listed(host) or not is_host_allow_listed(host) or is_url_block_listed(url):
-            return
-
-        found = False
         for regex, function in content_type_functions:
-            if regex.search(content_type):
-                found = True
-                needs_download = (
-                    (function.__name__ == "content_type_audios" and DOWNLOAD_AUDIOS) or
-                    (function.__name__ == "content_type_compresseds" and DOWNLOAD_COMPRESSEDS) or
-                    (function.__name__ == "content_type_databases" and DOWNLOAD_DATABASES) or
-                    (function.__name__ == "content_type_docs" and DOWNLOAD_DOCS) or
-                    (function.__name__ == "content_type_fonts" and DOWNLOAD_FONTS) or
-                    (function.__name__ == "content_type_images" and (DOWNLOAD_NSFW or DOWNLOAD_SFW or DOWNLOAD_ALL_IMAGES)) or
-                    (function.__name__ == "content_type_midis" and DOWNLOAD_MIDIS) or
-                    (function.__name__ == "content_type_pdfs" and DOWNLOAD_PDFS) or
-                    (function.__name__ == "content_type_torrents" and DOWNLOAD_TORRENTS)
-                )
+            if not regex.search(content_type):
+                continue
 
-                content = None
-                if needs_download:
-                    try:
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0), verify=False, headers=headers, follow_redirects=True) as client:
-                            get_resp = await client.get(url)
-                            content = get_resp.content                        
-                    except Exception:
-                        return
+            flag = download_flags.get(function.__name__, False)
+            content = None
 
-                doc = await function({
+            if flag:
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(30.0, connect=10.0),
+                        verify=False,
+                        headers=headers,
+                        follow_redirects=True,
+                    ) as client:
+                        get_resp = await client.get(url)
+                        content = get_resp.content
+                except Exception:
+                    return
+
+            doc = await function(
+                {
                     "url": url,
                     "content": content,
-                    "content_type": content_type,
                     "raw_content": content,
+                    "content_type": content_type,
                     "parent_host": host,
-                })
+                }
+            )
 
-                if doc:
-                    results["crawledcontent"].update(doc)
-                break
-
-        if not found:
+            if doc:
+                results["crawledcontent"].update(doc)
+            break
+        else:
+            # Executed only if no break happened (no match found)
             print(f"\033[91m[FAST CRAWLER] UNKNOWN type -{url}- -{content_type}-\033[0m")
 
     except Exception:
