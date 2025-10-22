@@ -468,6 +468,13 @@ content_type_pdf_regex = [
         r"^binary/octet-stream,application/pdf$",
     ]
 
+
+content_type_comic_regex = [
+        r"^application/x-cbr$",
+        r"^application/x-cbz$",
+        ]
+
+
 content_type_doc_regex = [
         r"^application/doc$",
         r"^application/xls$",
@@ -824,6 +831,7 @@ if USE_OCTET_STREAM:
         content_type_doc_regex,
         content_type_font_regex,
         content_type_torrent_regex,
+        content_type_comic_regex,
         content_type_compressed_regex,
     ]
     for category in categories:
@@ -863,8 +871,8 @@ EXTENSION_MAP = {
         ".rar": content_type_compressed_regex,
         ".sql": content_type_database_regex,
         ".mdb": content_type_database_regex,
-        ".cbr": content_type_doc_regex,
-        ".cbz": content_type_doc_regex,
+        ".cbr": content_type_comic_regex,
+        ".cbz": content_type_comic_regex,
         ".doc": content_type_doc_regex,
         ".docx": content_type_doc_regex,
         ".vsd": content_type_doc_regex,
@@ -1225,7 +1233,7 @@ class DatabaseConnection:
 
 
 def create_directories():
-    dirs = [IMAGES_FOLDER, NSFW_FOLDER, SFW_FOLDER , FONTS_FOLDER, VIDEOS_FOLDER,  MIDIS_FOLDER , AUDIOS_FOLDER, PDFS_FOLDER ,DOCS_FOLDER , DATABASES_FOLDER, TORRENTS_FOLDER,COMPRESSEDS_FOLDER , INPUT_FOLDER]
+    dirs = [IMAGES_FOLDER, NSFW_FOLDER, SFW_FOLDER , FONTS_FOLDER, VIDEOS_FOLDER,  MIDIS_FOLDER , AUDIOS_FOLDER, PDFS_FOLDER ,DOCS_FOLDER , DATABASES_FOLDER, TORRENTS_FOLDER,COMPRESSEDS_FOLDER , COMICS_FOLDER, INPUT_FOLDER]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
 
@@ -1897,6 +1905,18 @@ async def content_type_torrents(args):
         TORRENTS_FOLDER,
         "torrent",
         "torrent",
+    )
+
+
+@function_for_content_type(content_type_comic_regex)
+async def content_type_comics(args):
+    return await handle_content_type(
+        args,
+        DOWNLOAD_COMICS,
+        content_type_comic_regex,
+        COMICS_FOLDER,
+        "comic",
+        "comic",
     )
 
 
@@ -2734,6 +2754,7 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
         "content_type_midis": DOWNLOAD_MIDIS,
         "content_type_pdfs": DOWNLOAD_PDFS,
         "content_type_torrents": DOWNLOAD_TORRENTS,
+        "content_type_comics": DOWNLOAD_COMICS,
     }
 
     try:
@@ -2754,7 +2775,9 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
                     ) as client:
                         get_resp = await client.get(url)
                         content = get_resp.content
-                except Exception:
+                except Exception as e: # pylint: disable=broad-exception-caught
+                    if DEBUG_PW:
+                        print(f"[fast_extension_crawler] {e}")
                     return
 
             doc = await function(
