@@ -7,3 +7,4 @@ fake_useragent
 bs4
 httpx
 elasticsearch==8.17.2
+psutil
