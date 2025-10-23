@@ -2693,8 +2693,45 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
                 pass
 
 
-# pylint: disable=too-many-branches
+# pylint: disable=too-many-branches,too-many-locals
 async def fast_extension_crawler(url, content_type_patterns, db, playwright):
+    """
+    Quickly determines how to handle a given URL based on its Content-Type header,
+    downloading files of allowed types and delegating others to the standard crawler.
+
+    This asynchronous function performs a lightweight HEAD request to determine
+    a URL’s content type before deciding whether to:
+    - Download and process the content immediately (for matching file types).
+    - Delegate processing to `get_page()` when the content type is HTML-like or unsupported.
+    - Skip URLs from blocklisted hosts or URLs not in the allow list.
+
+    The function maps each recognized content type regex to a specialized handler
+    (e.g., `content_type_images`, `content_type_docs`) and uses associated download flags
+    (e.g., `DOWNLOAD_PDFS`, `DOWNLOAD_IMAGES`) to control what types of files to fetch.
+
+    Args:
+        url (str): The target URL to inspect or download.
+        content_type_patterns (list[re.Pattern]): List of regex patterns defining
+            acceptable Content-Type values to process quickly.
+        db: Database handle or connection used by the main crawler for persistence.
+        playwright: Playwright browser context or controller, used by fallback functions.
+
+    Behavior:
+        - Performs a HEAD request with randomized User-Agent.
+        - Falls back to `get_page()` if the request fails, response is invalid,
+          or content type is missing or mismatched.
+        - Optionally downloads matching content types according to configured flags.
+        - Updates the global `results["crawledcontent"]` dictionary with parsed results.
+        - Randomly sleeps at the end to add delay variability between requests.
+
+    Notes:
+        - Broad exception handling is intentionally used to avoid breaking
+          async loops during large-scale crawling.
+        - Unknown content types trigger a visible warning message.
+        - The function is intended for high-performance "fast path" crawling
+          of non-HTML resources.
+
+    """    
     headers = {"User-Agent": UserAgent().random}
 
     async def fallback():
@@ -2709,7 +2746,9 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
             follow_redirects=True,
         ) as client:
             head_resp = await client.head(url)
-    except Exception:
+    except Exception as e: # pylint: disable=broad-exception-caught
+        if DEBUG_PW:
+            print(f"[fast_extension_crawler fallback] {e}")
         return await fallback()
 
     if not (200 <= head_resp.status_code < 300):
@@ -2797,8 +2836,9 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
             # Executed only if no break happened (no match found)
             print(f"\033[91m[FAST CRAWLER] UNKNOWN type -{url}- -{content_type}-\033[0m")
 
-    except Exception:
-        pass
+    except Exception as e: # pylint: disable=broad-exception-caught
+        if DEBUG_PW: 
+            print(f"[fast_extension_crawler] {e}")
 
     await asyncio.sleep(random.uniform(FAST_RANDOM_MIN_WAIT, FAST_RANDOM_MAX_WAIT))
 
