@@ -2598,16 +2598,54 @@ def deduplicate_links_vs_content_es(
     print(f"Deduplication done. Deleted {deleted_total} docs from {links_index_pattern}.")
     return deleted_total
 
+# pylint: disable=too-many-branches
+async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS): 
+    """
+    Perform a fast crawling pass on URLs with specific file extensions.
 
-async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
+    This function queries the Elasticsearch database for URLs that match 
+    configured file extensions (from `EXTENSION_MAP`) and performs asynchronous, 
+    high-speed crawling on them using Playwright. It is designed for efficiently 
+    collecting non-HTML content (e.g., PDFs, images, videos, etc.) while avoiding 
+    redundancy and excessive load.
+
+    Workflow:
+        1. Deduplicates links already present in the content index.
+        2. Randomizes the order of file extensions to distribute crawling effort.
+        3. For each extension:
+           - Queries Elasticsearch for matching URLs (regex or wildcard, depending on configuration).
+           - Iterates through results using Elasticsearch's scroll API.
+           - Selects at most one unique URL per host to minimize host bias.
+           - Uses asyncio semaphores to run multiple crawlers concurrently (up to `max_workers`).
+           - Processes crawler results (content and links) and stores them back in the database.
+        4. Cleans up the Elasticsearch scroll context after processing.
+
+    Args:
+        db: 
+            Database wrapper that provides Elasticsearch access and a `save_batch()` method 
+            for saving results.
+        max_workers (int, optional): 
+            Maximum number of concurrent async tasks (default: `MAX_FAST_WORKERS`).
+
+    Notes:
+        - The crawling strategy aims to quickly gather downloadable content 
+          (e.g., `.pdf`, `.zip`, `.mp4`) using lightweight Playwright requests.
+        - Error handling is broad to prevent interruptions from isolated failures.
+        - Uses randomization and host deduplication to spread requests evenly across domains.
+
+    Raises:
+        Exception: Any unexpected error during crawling or Elasticsearch operations 
+                   is caught and logged, but not re-raised.
+
+    """    
     print("Housekeeping links that are already in content.")
     deduplicate_links_vs_content_es(db)
 
     shuffled_extensions = list(EXTENSION_MAP.items())
     random.shuffle(shuffled_extensions)
 
-    async with async_playwright() as playwright:  # 👈 only start once
-        for extension, content_type_patterns in shuffled_extensions:
+    async with async_playwright() as playwright: 
+        for extension, content_type_patterns in shuffled_extensions: # pylint: disable=too-many-nested-blocks
             await asyncio.sleep(FAST_DELAY)
             print(f"[FAST CRAWLER] Extension: {extension}")
             xtension = extension[1:]
@@ -2689,8 +2727,8 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
 
                 db.es.clear_scroll(scroll_id=scroll_id)
 
-            except Exception as e:
-                pass
+            except Exception as e: # pylint: disable=broad-exception-caught
+                print(f"[run_fast_extension_pass] {url} {e}")
 
 
 # pylint: disable=too-many-branches,too-many-locals
@@ -3018,7 +3056,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 try:
                     content = body_bytes_local.decode(encoding, errors="replace")
                 except Exception as e: # pylint: disable=broad-exception-caught
-                    print(f"3474 {e}")
+                    if DEBUG_PW:
+                        print(f"[HANDLE_RESPONSE] {e}")
                     content = ""
 
             if ctype:
@@ -3049,11 +3088,13 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                             })
                             page_data["crawledcontent"].update(urlresult)
                         except Exception as e: # pylint: disable=broad-exception-caught
-                            print(f"3493 {e}")
+                            if DEBUG_PW:
+                                print(f"[HANDLE_RESPONSE] {e}")
                 if not found:
                     print(f"\033[91mUNKNOWN type -{rurl}- -{ctype}-\033[0m")
         except Exception as e: # pylint: disable=broad-exception-caught
-            print(f"3511 Error handling response: {e}")
+            if DEBUG_PW:
+                print(f"[HANDLE_RESPONSE] Error handling response: {e}")
 
 
     # --- Helper: extract data from HTML page ---
