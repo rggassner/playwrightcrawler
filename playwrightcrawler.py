@@ -472,6 +472,8 @@ content_type_pdf_regex = [
 content_type_comic_regex = [
         r"^application/x-cbr$",
         r"^application/x-cbz$",
+        r"^application/vnd\.comicbook\+zip$",
+        r"^application/vnd\.comicbook-rar$",
         ]
 
 
@@ -490,8 +492,6 @@ content_type_doc_regex = [
         r"^application/vnd\.visio$",
         r"^application/vnd\.ms-word$",
         r"^application/vnd\.ms-excel$",
-        r"^application/vnd\.comicbook-rar$",
-        r"^application/vnd\.comicbook\+zip$",
         r"^application/vnd\.freelog\.comic$",
         r"^application/vnd\.ms-officetheme$",
         r"^application/vnd\.ms-visio\.drawing$",
@@ -2592,13 +2592,13 @@ def deduplicate_links_vs_content_es(
     # Clear scroll
     try:
         es.clear_scroll(scroll_id=scroll_id)
-    except Exception:
-        pass
+    except Exception as e: # pylint: disable=broad-exception-caught
+        print(f"[deduplicate_links_vs_content_es] {e}")
 
     print(f"Deduplication done. Deleted {deleted_total} docs from {links_index_pattern}.")
     return deleted_total
 
-# pylint: disable=too-many-branches
+# pylint: disable=too-many-branches,too-many-locals
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS): 
     """
     Perform a fast crawling pass on URLs with specific file extensions.
@@ -2695,12 +2695,14 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
                             unique_urls.append(url)
                             host_seen.add(host)
 
-                    results = {"crawledcontent": {}, "crawledlinks": set()}
+                    results = {"crawledcontent": {}, "crawledlinks": set()} # pylint: disable=redefined-outer-name
                     semaphore = asyncio.Semaphore(max_workers)
 
-                    async def sem_task(url):
-                        async with semaphore:
-                            return await fast_extension_crawler(url, content_type_patterns, db, playwright)
+                    async def sem_task(url, ctype_patterns=content_type_patterns, sem=semaphore):
+                        async with sem:
+                            return await fast_extension_crawler(url, ctype_patterns, db, playwright)
+
+
 
                     tasks = [sem_task(url) for url in unique_urls]
                     batch_results = await asyncio.gather(*tasks, return_exceptions=True)
