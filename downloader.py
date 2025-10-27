@@ -3,11 +3,13 @@ import os
 import re
 import random
 import asyncio
-import httpx
 from urllib.parse import urlsplit
+from collections import defaultdict
+import httpx
 from elasticsearch import helpers
-from playwrightcrawler import *
-from config import *
+from playwrightcrawler import content_type_comic_regex, content_type_octetstream, DatabaseConnection
+from config import CONTENT_INDEX
+
 
 # --- CONFIGURATION ---
 LINKS_INDEX = CONTENT_INDEX
@@ -15,7 +17,7 @@ OUTPUT_DIR = "downloaded_files"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- FILTER CONFIGURATION (regex-based) ---
-INCLUDE_EXTENSIONS = [r"cbr", r"cbz$"]
+INCLUDE_EXTENSIONS = [r"cbr", r"cbz"]
 EXCLUDE_EXTENSIONS = []
 
 INCLUDE_CONTENT_TYPES = content_type_comic_regex + content_type_octetstream
@@ -137,16 +139,36 @@ async def download_urls_async(urls, concurrency=MAX_CONCURRENCY):
         await asyncio.gather(*tasks)
 
 
-# --- MAIN EXECUTION ---
-def main(db):
+def main():
+    """
+    Entry point for the asynchronous file downloader.
+
+    This function initializes the database connection, retrieves all URLs
+    that match the defined filters (extensions, content types, and hosts),
+    and launches asynchronous download tasks with a configurable concurrency limit.
+
+    Behavior:
+        - Connects to Elasticsearch via `DatabaseConnection`.
+        - Uses `get_filtered_urls()` to collect eligible URLs.
+        - Displays the number of filtered URLs found.
+        - If any URLs are available, runs `download_urls_async()` with the specified
+          concurrency level defined by `MAX_CONCURRENCY`.
+
+    Notes:
+        - The script gracefully handles large result sets using Elasticsearch’s
+          scroll/scan helpers.
+        - Each download is performed concurrently while respecting per-host
+          politeness limits.
+        - Intended as the main orchestrator for filtered bulk downloads.
+
+    """    
+    db = DatabaseConnection()
     urls = get_filtered_urls(db)
     print(f"Found {len(urls)} filtered URLs.")
-
     if urls:
         asyncio.run(download_urls_async(urls, concurrency=MAX_CONCURRENCY))
 
 
 if __name__ == "__main__":
-    db = DatabaseConnection()
-    main(db)
+    main()
 
