@@ -193,6 +193,8 @@ STRICT_EXTENSION_QUERY = True
 # --- Blocks and removes ---
 # --------------------------
 
+REMOVE_REPEATED_SEGMENTS = True
+
 # This option only makes sense to be activated when you have an external
 # script packing data to database, since all crawler data is already
 # filtered while urls are entering.
