@@ -639,6 +639,7 @@ content_type_all_others_regex = [
         r"^multipart/mixed$",
         r"^application/cgi$",
         r"^text/javascript$",
+        r"^application/exe$",
         r"^application/xml$",
         r"^application/aux$",
         r"^application/x-j$",
@@ -1016,6 +1017,48 @@ def get_urls_by_random_host_prefix(db, size=RANDOM_SITES_QUEUE):
     return all_urls
 
 
+def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) -> bool:
+    """
+    Detects cyclic or recursive directory structures in a URL path
+    by finding repeated patterns of up to `max_pattern` segments.
+
+    Example detections:
+        /fonts/fonts/fonts/
+        /assets/video/assets/video/assets/video/
+        /a/b/c/a/b/c/a/b/c/
+        /assets/video/assets/video/  (only 2 repeats, below threshold)
+
+    Args:
+        url (str): Full URL to analyze.
+        max_pattern (int): Maximum length of the repeating directory pattern (default 5).
+        min_repeats (int): Minimum consecutive repetitions required to trigger detection (default 3).
+
+    Returns:
+        bool: True if a repeating path pattern occurs `min_repeats` or more times.
+    """
+    path = urlparse(url).path.strip('/')
+    if not path:
+        return False
+
+    segments = path.split('/')
+
+    for pattern_len in range(1, min(max_pattern, len(segments) // min_repeats) + 1):
+        # Convert to tuple for hashable pattern comparison
+        for i in range(len(segments) - pattern_len * min_repeats + 1):
+            pattern = segments[i:i + pattern_len]
+
+            # Count how many times it repeats consecutively
+            repeat_count = 1
+            j = i + pattern_len
+            while j + pattern_len <= len(segments) and segments[j:j + pattern_len] == pattern:
+                repeat_count += 1
+                j += pattern_len
+
+            if repeat_count >= min_repeats:
+                return True
+    return False
+
+
 def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
     urls_index = f"{LINKS_INDEX}-*"
     host_to_url = {}
@@ -1283,7 +1326,12 @@ def preprocess_crawler_data(data: dict) -> dict:
             
             # Strip fragment (#whatever)
             normalized_url = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
-            if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(normalized_url):
+            if(
+                    not is_host_block_listed(host) 
+                    and is_host_allow_listed(host) 
+                    and not is_url_block_listed(normalized_url)
+                    and not has_repeated_segments(normalized_url)
+            ):
                 if normalized_url not in crawledcontent:
                     filtered_links[normalized_url] = host 
 
@@ -1297,7 +1345,12 @@ def preprocess_crawler_data(data: dict) -> dict:
         host = urlsplit(url).hostname
         if not host:
             continue  # skip if content URL has no host
-        if not is_host_block_listed(host) and is_host_allow_listed(host) and not is_url_block_listed(url):
+        if(
+                not is_host_block_listed(host) 
+                and is_host_allow_listed(host) 
+                and not is_url_block_listed(url)
+                and not has_repeated_segments(url)
+        ):
             new_doc = doc.copy()
             insert_only_fields = {}
 
@@ -2079,6 +2132,31 @@ def remove_blocked_urls_from_es_db(db):
 
     print(f"\nDone. Total deleted by path: {total_deleted}")
 
+def remove_repeated_segments_urls_from_es_db(db):
+    # Compile path-based regex block list
+    def process_index(index_pattern: str, label: str) -> int:
+        deleted = 0
+        query = {"query": {"match_all": {}}}
+
+        print(f"Deleting blocked URLs from {label}")
+
+        for doc in helpers.scan(db.es, index=index_pattern, query=query):
+            url = doc["_source"].get("url")
+            if not url:
+                continue
+            if has_repeated_segments(url):
+                db.es.delete(index=doc["_index"], id=doc["_id"])
+                print(f"Deleted by repeated segments: {url}")
+                deleted += 1
+
+        return deleted
+
+    total_deleted = 0
+    total_deleted += process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)   # <-- added ()
+    total_deleted += process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)  # <-- added ()
+
+    print(f"\nDone. Total deleted by path: {total_deleted}")
+
 async def process_input_url_files(db):
     if not os.path.isdir(INPUT_FOLDER):
         return
@@ -2493,6 +2571,37 @@ async def safe_content(page, retries: int = 5, delay: float = 1.0) -> str:
     return ""
 
 def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
+    """
+    Selects a random set of unvisited domains from the database using weighted strategies.
+
+    This function dynamically chooses one domain selection method based on configurable
+    probability weights defined in `METHOD_WEIGHTS`. Each method represents a different
+    strategy for selecting host domains (e.g., least populated, oldest, random, or by prefix).
+    If no custom weights are provided, all methods are assigned equal probability.
+
+    The selected method is executed to retrieve up to `size` unvisited domains from the
+    Elasticsearch index (or other data source provided by `db`). The goal is to maximize
+    crawling diversity and minimize bias toward over-crawled hosts.
+
+    Selection methods:
+        - **fewest_urls**: Prefer hosts with the fewest URLs stored.
+        - **oldest**: Prefer domains with the oldest last-visited timestamps.
+        - **host_prefix**: Pick domains by random host prefix grouping.
+        - **random**: Select completely random unvisited domains.
+
+    Args:
+        db: Database or Elasticsearch client instance used for querying.
+        size (int, optional): Number of domains to retrieve. Defaults to `RANDOM_SITES_QUEUE`.
+
+    Returns:
+        list: A list of domain URLs selected according to the chosen method. 
+              Returns an empty list if no valid methods are configured or if an error occurs.
+
+    Exceptions:
+        Catches and logs both `RequestError` (from Elasticsearch) and generic exceptions,
+        returning an empty list in both cases.
+
+    """    
     # Default weights if none provided
     if METHOD_WEIGHTS is None:
         method_weights = {
@@ -2535,7 +2644,7 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
     except RequestError as e:
         print("Elasticsearch request error:", e)
         return []
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-exception-caught
         print(f"Unhandled error in get_random_unvisited_domains: {e}")
         return []
 
@@ -2819,6 +2928,7 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
         is_host_block_listed(host)
         or not is_host_allow_listed(host)
         or is_url_block_listed(url)
+        or has_repeated_segments(url)
     ):
         return
 
@@ -3069,6 +3179,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
                 not is_host_block_listed(host)
                 and is_host_allow_listed(host)
                 and not is_url_block_listed(rurl)
+                and not has_repeated_segments(rurl)
                 and ctype
             ):
                 found = False
@@ -3375,6 +3486,9 @@ async def main():
         instance = get_instance_number()
         for iteration in range(ITERATIONS):
             if instance == 1:
+                if REMOVE_REPEATED_SEGMENTS:
+                    print(f"Instance {instance}, iteration {iteration}: Removing urls with repeated segments.")
+                    remove_repeated_segments_urls_from_es_db(db)
                 if REMOVE_EMPTY_CTYPE:
                     print(f"Instance {instance}, iteration {iteration}: Removing urls with empty content_type.")
                     remove_empty_content_type_from_es_db(db)
