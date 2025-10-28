@@ -1,11 +1,12 @@
-#!/usr/bin/env python3
+#!venv/bin/python3
 import os
 import re
 import random
 import asyncio
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 from collections import defaultdict
 import httpx
+import aiofiles
 from elasticsearch import helpers
 from playwrightcrawler import content_type_comic_regex, content_type_octetstream, DatabaseConnection
 from config import CONTENT_INDEX
@@ -13,7 +14,7 @@ from config import CONTENT_INDEX
 
 # --- CONFIGURATION ---
 LINKS_INDEX = CONTENT_INDEX
-OUTPUT_DIR = "downloaded_files"
+OUTPUT_DIR = os.path.abspath("downloaded_files")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- FILTER CONFIGURATION (regex-based) ---
@@ -85,6 +86,51 @@ def get_filtered_urls(db, size=None):
     return urls
 
 
+# --- SECURE PATH BUILDER ---
+def safe_filepath_from_url(url):
+    """
+    Generate a safe, normalized, traversal-proof file path inside OUTPUT_DIR.
+    Replicates host and URL structure, adding 'index.html' where needed.
+    """
+    parsed = urlsplit(url)
+    host = parsed.hostname or "unknown"
+    path = parsed.path or "/"
+    query = parsed.query
+
+    # Add index.html for directories
+    if path.endswith("/"):
+        path += "index.html"
+
+    # Encode query string to avoid collisions and illegal chars
+    if query:
+        safe_query = quote(query, safe="")
+        base, ext = os.path.splitext(path)
+        path = f"{base}_{safe_query}{ext or '.html'}"
+
+    # Remove any leading slashes to prevent absolute paths
+    path = path.lstrip("/")
+
+    # Replace unsafe characters
+    safe_path = re.sub(r"[<>:\"|?*]", "_", path)
+
+    # Combine into host directory
+    full_path = os.path.join(OUTPUT_DIR, host, safe_path)
+
+    # Normalize to prevent ../ traversal
+    normalized = os.path.normpath(full_path)
+
+    # Ensure path is inside OUTPUT_DIR
+    if not os.path.commonpath([normalized, OUTPUT_DIR]) == OUTPUT_DIR:
+        # If it escapes, flatten the path
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", f"{host}_{path}")
+        normalized = os.path.join(OUTPUT_DIR, "unsafe", safe_name)
+
+    # Create parent directories
+    os.makedirs(os.path.dirname(normalized), exist_ok=True)
+
+    return normalized
+
+
 # --- ASYNC DOWNLOAD FUNCTION WITH RETRY & RESUME ---
 async def download_file(client, url, global_semaphore, host_locks, retries=RETRIES):
     host = urlsplit(url).hostname or "unknown"
@@ -92,14 +138,13 @@ async def download_file(client, url, global_semaphore, host_locks, retries=RETRI
         host_locks[host] = asyncio.Lock()
 
     attempt = 0
-    filename = os.path.basename(urlsplit(url).path) or "index.html"
-    filepath = os.path.join(OUTPUT_DIR, filename)
+    filepath = safe_filepath_from_url(url)
 
     while attempt < retries:
         try:
             async with global_semaphore, host_locks[host]:
                 headers = {}
-                # Resume support: start from file size if exists
+                # Resume support
                 if os.path.exists(filepath):
                     file_size = os.path.getsize(filepath)
                     headers["Range"] = f"bytes={file_size}-"
@@ -107,17 +152,15 @@ async def download_file(client, url, global_semaphore, host_locks, retries=RETRI
                     file_size = 0
 
                 async with client.stream("GET", url, timeout=30.0, follow_redirects=True, headers=headers) as response:
-                    # Accept 206 Partial Content for resume
                     if response.status_code not in (200, 206):
                         response.raise_for_status()
 
-                    import aiofiles
                     mode = "ab" if file_size > 0 else "wb"
                     async with aiofiles.open(filepath, mode) as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             await f.write(chunk)
 
-            print(f"[+] Downloaded {url} ({'resumed' if file_size > 0 else 'new'})")
+            print(f"[+] Downloaded {url} -> {filepath} ({'resumed' if file_size > 0 else 'new'})")
             return
 
         except Exception as e:
@@ -129,8 +172,36 @@ async def download_file(client, url, global_semaphore, host_locks, retries=RETRI
     print(f"[ERROR] Failed to download {url} after {retries} attempts")
 
 
-# --- ASYNC DOWNLOAD MANAGER ---
 async def download_urls_async(urls, concurrency=MAX_CONCURRENCY):
+    """
+    Asynchronously download multiple URLs with concurrency and per-host throttling.
+
+    This function manages concurrent downloads of a list of URLs while respecting both 
+    global and per-host concurrency limits. Each host has its own asyncio.Lock to 
+    prevent simultaneous requests to the same domain, which helps reduce server load 
+    and avoid detection or throttling. All downloads are handled through a single 
+    shared `httpx.AsyncClient` instance with HTTP/2 enabled for efficiency.
+
+    Args:
+        urls (list[str]): A list of URLs to be downloaded.
+        concurrency (int, optional): The maximum number of simultaneous downloads 
+            allowed across all hosts. Defaults to `MAX_CONCURRENCY`.
+
+    Behavior:
+        - Uses a global asyncio.Semaphore to cap total concurrent downloads.
+        - Assigns a dedicated asyncio.Lock per host to serialize requests to the same domain.
+        - Creates download tasks for all URLs and runs them concurrently.
+        - Ensures all tasks complete, even if individual downloads fail.
+
+    Raises:
+        httpx.RequestError: If there is a network-level issue during download.
+        asyncio.CancelledError: If the coroutine is cancelled before completion.
+
+    Notes:
+        - Directory creation and file saving are handled inside `download_file()`.
+        - This function is intended to be run within an asyncio event loop, 
+          typically via `asyncio.run(download_urls_async(...))`.
+    """
     global_semaphore = asyncio.Semaphore(concurrency)
     host_locks = defaultdict(asyncio.Lock)
 
@@ -143,25 +214,13 @@ def main():
     """
     Entry point for the asynchronous file downloader.
 
-    This function initializes the database connection, retrieves all URLs
-    that match the defined filters (extensions, content types, and hosts),
-    and launches asynchronous download tasks with a configurable concurrency limit.
-
-    Behavior:
-        - Connects to Elasticsearch via `DatabaseConnection`.
-        - Uses `get_filtered_urls()` to collect eligible URLs.
-        - Displays the number of filtered URLs found.
-        - If any URLs are available, runs `download_urls_async()` with the specified
-          concurrency level defined by `MAX_CONCURRENCY`.
-
-    Notes:
-        - The script gracefully handles large result sets using Elasticsearch’s
-          scroll/scan helpers.
-        - Each download is performed concurrently while respecting per-host
-          politeness limits.
-        - Intended as the main orchestrator for filtered bulk downloads.
-
-    """    
+    - Connects to Elasticsearch via `DatabaseConnection`
+    - Retrieves filtered URLs based on regex inclusion/exclusion
+    - Downloads each URL concurrently using asyncio + httpx
+    - Reconstructs site directory trees safely under OUTPUT_DIR
+    - Prevents directory traversal, absolute path writes, and collisions
+    - Supports partial resume, exponential backoff retries, and per-host concurrency
+    """
     db = DatabaseConnection()
     urls = get_filtered_urls(db)
     print(f"Found {len(urls)} filtered URLs.")
