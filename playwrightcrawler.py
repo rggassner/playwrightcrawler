@@ -67,6 +67,7 @@ content_type_octetstream = [
         r"^application/x-octet-stream$",
         r"^x-application/octet-stream$",
         r"^application/force-download$",
+        r"^application/x-www-form-urlencoded$",
         r"^application/octet-stream,text/html$",
         r"^application/octet-stream,atext/plain$",
         r"^application/octet-streamCharset=UTF-8$",
@@ -2155,7 +2156,7 @@ def remove_repeated_segments_urls_from_es_db(db):
     total_deleted += process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)   # <-- added ()
     total_deleted += process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)  # <-- added ()
 
-    print(f"\nDone. Total deleted by path: {total_deleted}")
+    print(f"\nDone. Total deleted by segments: {total_deleted}")
 
 async def process_input_url_files(db):
     if not os.path.isdir(INPUT_FOLDER):
@@ -2561,7 +2562,7 @@ async def safe_content(page, retries: int = 5, delay: float = 1.0) -> str:
     for i in range(retries):
         try:
             return await page.content()
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-exception-caught
             msg = str(e)
             if "Unable to retrieve content because the page is navigating" in msg:
                 pass
