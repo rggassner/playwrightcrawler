@@ -8,7 +8,7 @@ from collections import defaultdict
 import httpx
 import aiofiles
 from elasticsearch import helpers
-from playwrightcrawler import content_type_comic_regex, content_type_octetstream, DatabaseConnection
+from playwrightcrawler import content_type_octetstream, content_type_pdf_regex, DatabaseConnection
 from config import CONTENT_INDEX
 
 
@@ -18,10 +18,21 @@ OUTPUT_DIR = os.path.abspath("downloaded_files")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- FILTER CONFIGURATION (regex-based) ---
-INCLUDE_EXTENSIONS = [r"cbr", r"cbz"]
+
+#Download all comics
+#from playwrightcrawler import content_type_comic_regex
+#INCLUDE_EXTENSIONS = [r"cbr", r"cbz"]
+#EXCLUDE_EXTENSIONS = []
+#INCLUDE_CONTENT_TYPES = content_type_comic_regex + content_type_octetstream
+#EXCLUDE_CONTENT_TYPES = [r"^text/plain", r"^text/html"]
+#INCLUDE_HOSTS = []
+#EXCLUDE_HOSTS = []
+
+
+INCLUDE_EXTENSIONS = [r"pdf"]
 EXCLUDE_EXTENSIONS = []
 
-INCLUDE_CONTENT_TYPES = content_type_comic_regex + content_type_octetstream
+INCLUDE_CONTENT_TYPES = content_type_pdf_regex + content_type_octetstream
 EXCLUDE_CONTENT_TYPES = [r"^text/plain", r"^text/html"]
 
 INCLUDE_HOSTS = []
@@ -34,51 +45,118 @@ BACKOFF_FACTOR = 2  # exponential backoff base
 
 # --- FILTER HELPERS ---
 def regexes_to_es_regexp(terms):
+    """
+    Converts a list of regex terms into a single Elasticsearch-compatible regexp pattern.
+    
+    Safely handles None, empty strings, or non-string elements. 
+    Returns None if no valid patterns remain.
+    """
     if not terms:
         return None
-    cleaned = [re.sub(r'^\^|\$$', '', t) for t in terms]
-    return "(" + "|".join(cleaned) + ")"
+
+    cleaned = []
+    for t in terms:
+        if not t or not isinstance(t, str):
+            continue
+        # Remove ^ and $ anchors, since ES regex doesn't support them
+        t = re.sub(r'^\^|\$$', '', t)
+        t = t.strip()
+        if t:
+            cleaned.append(t)
+
+    if not cleaned:
+        return None
+
+    # Join all patterns using alternation
+    joined = "|".join(cleaned)
+
+    # Truncate overly long regexes to stay under Elasticsearch's 1000-character limit
+    if len(joined) > 900:
+        joined = joined[:900] + ".*"  # fallback pattern to avoid error
+
+    return joined
 
 
 # --- MAIN FUNCTION TO GET FILTERED URLS ---
-def get_filtered_urls(db, size=None):
+def get_filtered_urls(db, size=None, chunk_size=10):
+    """
+    Retrieve filtered URLs from Elasticsearch using regex-based inclusion and exclusion rules.
+    Automatically splits long regex lists into smaller chunks to stay under the
+    Elasticsearch max_regex_length limit (default 1000 chars).
+
+    Args:
+        db (DatabaseConnection): The database connection wrapper (must expose `es` attribute).
+        size (int, optional): Limit number of URLs returned. If None, all are returned.
+        chunk_size (int, optional): Maximum number of regex patterns per query chunk.
+
+    Returns:
+        list[str]: List of filtered URLs matching all the inclusion/exclusion criteria.
+    """
+
     urls_index = f"{LINKS_INDEX}-*"
-    must_clauses, must_not_clauses = [], []
-
-    # --- Extension filters ---
-    include_ext = regexes_to_es_regexp(INCLUDE_EXTENSIONS)
-    if include_ext:
-        must_clauses.append({"regexp": {"file_extension.keyword": include_ext}})
-    exclude_ext = regexes_to_es_regexp(EXCLUDE_EXTENSIONS)
-    if exclude_ext:
-        must_not_clauses.append({"regexp": {"file_extension.keyword": exclude_ext}})
-
-    # --- Content-type filters ---
-    include_ct = regexes_to_es_regexp(INCLUDE_CONTENT_TYPES)
-    if include_ct:
-        must_clauses.append({"regexp": {"content_type.keyword": include_ct}})
-    exclude_ct = regexes_to_es_regexp(EXCLUDE_CONTENT_TYPES)
-    if exclude_ct:
-        must_not_clauses.append({"regexp": {"content_type.keyword": exclude_ct}})
-
-    # --- Host filters ---
-    include_host = regexes_to_es_regexp(INCLUDE_HOSTS)
-    if include_host:
-        must_clauses.append({"regexp": {"host.keyword": include_host}})
-    exclude_host = regexes_to_es_regexp(EXCLUDE_HOSTS)
-    if exclude_host:
-        must_not_clauses.append({"regexp": {"host.keyword": exclude_host}})
-
-    query = {
-        "query": {"bool": {"must": must_clauses or [{"match_all": {}}], "must_not": must_not_clauses}},
-        "_source": ["url"],
-    }
-
     urls = []
-    for doc in helpers.scan(db.es, index=urls_index, query=query):
-        url = doc["_source"].get("url")
-        if url:
-            urls.append(url)
+
+    def chunks(lst, n):
+        """Yield successive n-sized chunks from a list."""
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    # Helper to generate query parts
+    def build_query(include_ext, exclude_ext, include_ct, exclude_ct, include_host, exclude_host):
+        must_clauses, must_not_clauses = [], []
+
+        # --- Extension filters ---
+        if include_ext:
+            must_clauses.append({"regexp": {"file_extension.keyword": include_ext}})
+        if exclude_ext:
+            must_not_clauses.append({"regexp": {"file_extension.keyword": exclude_ext}})
+
+        # --- Content-type filters ---
+        if include_ct:
+            must_clauses.append({"regexp": {"content_type.keyword": include_ct}})
+        if exclude_ct:
+            must_not_clauses.append({"regexp": {"content_type.keyword": exclude_ct}})
+
+        # --- Host filters ---
+        if include_host:
+            must_clauses.append({"regexp": {"host.keyword": include_host}})
+        if exclude_host:
+            must_not_clauses.append({"regexp": {"host.keyword": exclude_host}})
+
+        return {
+            "query": {"bool": {"must": must_clauses or [{"match_all": {}}], "must_not": must_not_clauses}},
+            "_source": ["url"],
+        }
+
+    # --- Chunk-based querying for large regex lists ---
+    include_ct_chunks = list(chunks(INCLUDE_CONTENT_TYPES or [None], chunk_size))
+    include_ext_chunks = list(chunks(INCLUDE_EXTENSIONS or [None], chunk_size))
+    include_host_chunks = list(chunks(INCLUDE_HOSTS or [None], chunk_size))
+
+    # Ensure at least one chunk exists for each (so we loop once even if empty)
+    include_ct_chunks = include_ct_chunks or [[None]]
+    include_ext_chunks = include_ext_chunks or [[None]]
+    include_host_chunks = include_host_chunks or [[None]]
+
+    for ct_chunk in include_ct_chunks:
+        for ext_chunk in include_ext_chunks:
+            for host_chunk in include_host_chunks:
+                query = build_query(
+                    regexes_to_es_regexp(ext_chunk),
+                    regexes_to_es_regexp(EXCLUDE_EXTENSIONS),
+                    regexes_to_es_regexp(ct_chunk),
+                    regexes_to_es_regexp(EXCLUDE_CONTENT_TYPES),
+                    regexes_to_es_regexp(host_chunk),
+                    regexes_to_es_regexp(EXCLUDE_HOSTS),
+                )
+
+                try:
+                    for doc in helpers.scan(db.es, index=urls_index, query=query):
+                        url = doc["_source"].get("url")
+                        if url:
+                            urls.append(url)
+                except Exception as e:
+                    print(f"[WARN] Skipping chunk due to query error: {e}")
 
     random.shuffle(urls)
     if size:
@@ -131,8 +209,49 @@ def safe_filepath_from_url(url):
     return normalized
 
 
-# --- ASYNC DOWNLOAD FUNCTION WITH RETRY & RESUME ---
 async def download_file(client, url, global_semaphore, host_locks, retries=RETRIES):
+    """
+    Asynchronously download a file with resume, retry, and skip-on-non-range support.
+
+    This function handles the download of a single URL while enforcing both global 
+    and per-host concurrency limits. It supports HTTP range-based resuming for 
+    partially downloaded files and intelligently skips re-downloading files when 
+    the server does not support range requests.
+
+    Behavior:
+        - If the file does not exist, it downloads from scratch.
+        - If the file exists and the server supports `Range` requests (HTTP 206),
+          the download resumes from the last saved byte.
+        - If the file exists but the server responds with `HTTP 200 OK`, indicating 
+          no range support, the download is skipped to avoid overwriting a complete file.
+        - Uses exponential backoff retry logic for transient errors.
+        - Each host is protected by a dedicated asyncio.Lock to prevent multiple
+          concurrent requests to the same domain.
+
+    Args:
+        client (httpx.AsyncClient): Shared HTTP client with HTTP/2 and connection pooling.
+        url (str): The target URL to download.
+        global_semaphore (asyncio.Semaphore): Limits the total number of concurrent downloads.
+        host_locks (dict[str, asyncio.Lock]): A mapping of hostname to per-host lock objects.
+        retries (int, optional): Maximum number of retry attempts before giving up. Defaults to `RETRIES`.
+
+    Returns:
+        None
+            Writes the downloaded (or resumed) file to disk under OUTPUT_DIR using a safe, 
+            normalized path derived from the URL. Skipped and failed downloads are logged 
+            to stdout with clear messages.
+
+    Raises:
+        httpx.RequestError: On unrecoverable network or connection issues.
+        httpx.HTTPStatusError: If the server responds with an unexpected HTTP code.
+        asyncio.CancelledError: If the coroutine is cancelled mid-download.
+
+    Notes:
+        - The function supports resume via the HTTP `Range` header.
+        - Files are opened in append mode (`"ab"`) when resuming, and in write mode (`"wb"`) for fresh downloads.
+        - The function respects server limits by serializing downloads per host.
+        - Skipping avoids redundant data transfer when range is unsupported.
+    """    
     host = urlsplit(url).hostname or "unknown"
     if host not in host_locks:
         host_locks[host] = asyncio.Lock()
@@ -144,19 +263,30 @@ async def download_file(client, url, global_semaphore, host_locks, retries=RETRI
         try:
             async with global_semaphore, host_locks[host]:
                 headers = {}
-                # Resume support
+                file_size = 0
+
+                # --- If file exists, try to resume ---
                 if os.path.exists(filepath):
                     file_size = os.path.getsize(filepath)
                     headers["Range"] = f"bytes={file_size}-"
-                else:
-                    file_size = 0
 
                 async with client.stream("GET", url, timeout=30.0, follow_redirects=True, headers=headers) as response:
-                    if response.status_code not in (200, 206):
+                    # --- Handle HTTP status codes ---
+                    if response.status_code == 206:
+                        # ✅ Server supports range requests (resume)
+                        mode = "ab"
+                        print(f"[RESUME] Resuming {url} from {file_size} bytes...")
+                    elif response.status_code == 200:
+                        # ⚠️ Server does not support Range
+                        if os.path.exists(filepath) and file_size > 0:
+                            print(f"[SKIP] Server does not support Range, and file already exists: {filepath}")
+                            return  # ✅ Skip instead of redownloading
+                        mode = "wb"
+                    else:
                         response.raise_for_status()
 
-                    mode = "ab" if file_size > 0 else "wb"
-                    async with aiofiles.open(filepath, mode) as f:
+                    # --- Write file ---
+                    async with aiofiles.open(filepath, mode) as f: # pylint: disable=possibly-used-before-assignment
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             await f.write(chunk)
 
