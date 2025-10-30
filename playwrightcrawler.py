@@ -2524,19 +2524,43 @@ def extract_top_words_from_text(text: str) -> list[str]:
     return [word for word, _ in most_common]
 
 def get_instance_number():
-    global lock_file
+    """
+    Determines the unique instance number for the current crawler process.
+
+    This function uses file-based locking under `/tmp/instance_flags/` to assign
+    each running crawler instance a distinct numeric identifier (from 1 to 99).
+    It attempts to acquire an exclusive, non-blocking file lock for each numbered
+    `.lock` file in ascending order. The first lock that can be acquired determines
+    the instance number.
+
+    This allows multiple crawler processes running on the same host to coordinate
+    without interfering with one another — each one gets a unique, stable instance
+    ID until it terminates (releasing its lock).
+
+    Lock files are automatically created if missing and persist under `/tmp` only
+    for the lifetime of the process.
+
+    Returns:
+        int: The assigned instance number (1–99).  
+             Returns `999` if no available lock could be acquired or if an error occurs.
+
+    Notes:
+        - Uses `fcntl.flock()` for interprocess locking, which is only available on Unix-like systems.
+        - The global variable `lock_file` must remain open to keep the lock active.
+    """    
+    global lock_file # pylint: disable=global-variable-undefined
     try:
         os.makedirs("/tmp/instance_flags", exist_ok=True)
         for i in range(1, 100):
             lock_path = f"/tmp/instance_flags/instance_{i}.lock"
-            lock_file = open(lock_path, "w")  # keep open!
+            lock_file = open(lock_path, "w")  # pylint: disable=consider-using-with,unspecified-encoding
             try:
                 fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return i
             except BlockingIOError:
                 lock_file.close()
                 continue
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-exception-caught
         print(f"Error determining instance number: {e}")
     return 999
 
@@ -2708,7 +2732,7 @@ def deduplicate_links_vs_content_es(
     print(f"Deduplication done. Deleted {deleted_total} docs from {links_index_pattern}.")
     return deleted_total
 
-# pylint: disable=too-many-branches,too-many-locals
+# pylint: disable=too-many-branches,too-many-locals,too-many-statements
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS): 
     """
     Perform a fast crawling pass on URLs with specific file extensions.
@@ -2841,6 +2865,19 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
 
             except Exception as e: # pylint: disable=broad-exception-caught
                 print(f"[run_fast_extension_pass] {url} {e}")
+                results["crawledcontent"].update({
+                    url: {
+                        "url": url,
+                        "content_type": "",
+                        "isopendir": False,
+                        "visited": True,
+                        "source": 'run_fast_extension_pass exception',
+                    }
+                })
+                presults = preprocess_crawler_data(results)
+                db.save_batch(presults)
+                results = {"crawledcontent": {}, "crawledlinks": set()}
+
 
 
 # pylint: disable=too-many-branches,too-many-locals
