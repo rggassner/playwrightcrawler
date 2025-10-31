@@ -2513,6 +2513,27 @@ def is_open_directory(content, content_url):
     return False, ""
 
 def extract_top_words_from_text(text: str) -> list[str]:
+    """
+    Extracts the most frequent words from a given text based on configurable filters.
+
+    The function performs optional normalization steps such as removing special characters
+    and converting text to lowercase, then filters words by length and frequency. 
+    It finally returns the top `WORDS_MAX_WORDS` most common words.
+
+    Global configuration variables used:
+        WORDS_REMOVE_SPECIAL_CHARS (bool): If True, removes punctuation and special characters.
+        WORDS_TO_LOWER (bool): If True, converts text to lowercase.
+        WORDS_MIN_LEN (int): Minimum allowed word length.
+        WORDS_MAX_LEN (int): Maximum allowed word length.
+        WORDS_MAX_WORDS (int): Maximum number of top words to return.
+
+    Args:
+        text (str): The input text from which to extract words.
+
+    Returns:
+        list[str]: A list of the most common words that satisfy the configured filters,
+        ordered by descending frequency.
+    """   
     if WORDS_REMOVE_SPECIAL_CHARS:
         text = re.sub(r'[^\w\s]', ' ', text, flags=re.UNICODE)
     if WORDS_TO_LOWER:
