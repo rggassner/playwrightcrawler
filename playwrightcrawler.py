@@ -1337,7 +1337,7 @@ def preprocess_crawler_data(data: dict) -> dict:
                     filtered_links[normalized_url] = host 
 
         except Exception as e:
-            print(f"[PREPROCESS_CRAWLER_DATA NORMALIZATION] Failed to normalize {url}: {e}")
+            print(f"[PREPROCESS_CRAWLER_DATA NORMALIZATION] Failed to normalize {url}: {e}. This url won't be persisted.")
             continue    
 
     for url, doc in crawledcontent.items():
@@ -2441,6 +2441,35 @@ async def get_min_webcontent_page(page) -> str:
 
 
 def is_open_directory(content, content_url):
+    """
+    Detects whether a given HTML content corresponds to an open directory listing.
+
+    This function analyzes the HTML body of a fetched web page and attempts to identify 
+    patterns that are characteristic of open or automatically generated directory listings.
+    It supports detection of multiple common styles such as Apache, Nginx, IIS, Lighttpd, 
+    h5ai, DUFS, Directory Lister, and other popular file listing scripts.
+
+    The detection is performed by scanning the content for known HTML or metadata patterns 
+    (e.g., titles like "Index of /", "Directory Listing", parent directory links, or 
+    generator meta tags). If any of the predefined patterns match, the function reports 
+    the page as an open directory.
+
+    Args:
+        content (str): The full HTML content of the web page to analyze.
+        content_url (str): The URL of the page being checked. Used to extract host 
+            information for host-specific pattern matching.
+
+    Returns:
+        tuple[bool, str]:
+            - A boolean indicating whether the page appears to be an open directory.
+            - The regex pattern that matched (or an empty string if no match was found).
+    
+    Notes:
+        - Matching is case-insensitive.
+        - The function can detect a variety of directory listing frameworks, 
+          including Apache, Lighttpd, IIS, h5ai, DUFS, and pCloud, among others.
+        - If no known pattern matches, the function safely returns `(False, "")`.
+    """    
     host = urlsplit(content_url)[1]
     hostnp = host.split(':')[0]
 
