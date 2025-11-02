@@ -1505,11 +1505,6 @@ def sanitize_url(
     if skip_log_tags is None:
         skip_log_tags = set()
 
-    #def log_change(reason, before, after):
-    #    if before != after and reason not in skip_log_tags and debug:
-    #        print(f"\033[91m[{reason}] URL sanitized \
-    #              from -{before}- to -{after}-\033[00m")
-
     def clean_hostname_with_userinfo(netloc, scheme):
         """
         Cleans netloc, preserving valid username:password@host:port
@@ -1567,7 +1562,6 @@ def sanitize_url(
         return ""
 
     url = url.strip()
-    #log_change("STRIP_WHITESPACE", pre_sanitize, url)
     pre_sanitize = url
     special_quote_pairs = [
         (r'^"(.*)"$', r'\1'),
@@ -1578,7 +1572,6 @@ def sanitize_url(
     ]
     for pattern, replacement in special_quote_pairs:
         cleaned = re.sub(pattern, replacement, url)
-        #log_change("SPECIAL_QUOTE_CLEAN", url, cleaned)
         url = cleaned
 
     scheme_fixes = [
@@ -1602,18 +1595,14 @@ def sanitize_url(
     ]
     for pattern, replacement in scheme_fixes:
         fixed = re.sub(pattern, replacement, url)
-        #log_change("FIX_SCHEME", url, fixed)
         url = fixed
 
     cleaned = re.sub(r'^[a-zA-Z."(´]https://', 'https://', url)
-    #log_change("PREFIX_CLEAN_HTTPS", url, cleaned)
     url = cleaned
     cleaned = re.sub(r'^[a-zA-Z."(´]http://', 'http://', url)
-    #log_change("PREFIX_CLEAN_HTTP", url, cleaned)
     url = cleaned
 
     url = re.sub(r'^(https?:)/+', r'\1//', url)
-    #log_change("FIX_SCHEME_SLASHES", pre_sanitize, url)
     try:
         parsed = urlsplit(url)
         scheme = parsed.scheme.lower()
@@ -1630,7 +1619,6 @@ def sanitize_url(
                          path,
                          parsed.query,
                          parsed.fragment))
-                #log_change("FIX_NETLOC_IN_PATH", url, rebuilt)
                 url = rebuilt
         else:
             path = re.sub(r'/{2,}', '/', parsed.path)
@@ -1640,11 +1628,9 @@ def sanitize_url(
                      path,
                      parsed.query,
                      parsed.fragment))
-            #log_change("NORMALIZE_PATH_SLASHES", url, rebuilt)
             url = rebuilt
     except Exception:
         fallback = re.sub(r'(https?://[^/]+)/{2,}', r'\1/', url)
-        #log_change("FALLBACK_SLASH_FIX", url, fallback)
         url = fallback
 
     try:
@@ -1662,7 +1648,6 @@ def sanitize_url(
 
         path = safe_normalize_path_slashes(parsed.path)
         normalized = urlunsplit((scheme, netloc, path, parsed.query, ''))
-        #log_change("FINAL_NORMALIZE", url, normalized)
         return normalized.strip()
     except Exception:
         return url.strip()
@@ -1687,7 +1672,7 @@ async def get_links_page(page, base_url: str) -> list[str]:
             # Filter only strings
             return [v for v in values if isinstance(v, str)]
         except Exception as e:
-            #print(f"[WARN] Could not extract <{tag_name}> from {base_url}: {e}")
+            print(f"[WARN] Could not extract <{tag_name}> from {base_url}: {e}")
             return []
 
     # Extract all sources safely
@@ -1744,7 +1729,7 @@ async def get_words_from_page(page) -> list[str]:
             # Keep only strings, ignore anything else
             text_parts = [str(x) for x in text_parts if isinstance(x, str)]
     except Exception as e:
-        # print(f"[WARN] get_words_from_page failed: {e}")
+        print(f"[WARN] get_words_from_page failed: {e}")
         text_parts = []
 
     combined_text = " ".join(text_parts)
@@ -2012,7 +1997,18 @@ async def content_type_download(args):
         soup = BeautifulSoup(content, "html.parser")
     except Exception as e:
         print(f"Soup parsing error for {args['url']}: {e}")
-        return False
+        return { args['url'] :
+                {
+            "url": args['url'],
+            "content_type": args['content_type'],
+            "visited": True,
+            "words": '',
+            "min_webcontent": '',
+            "raw_webcontent": '',
+            "source": 'content_type_html_regex_soup_exception',
+            "parent_host": args['parent_host'] }
+        }
+        
     words = ''
     min_webcontent = ''
     raw_webcontent = ''
@@ -2403,13 +2399,49 @@ soup_tag_blocklist = {
 }
 
 async def get_min_webcontent_page(page) -> str:
+    """
+    Extracts a minimal, text-only representation of a webpage using Playwright.
+
+    This function asynchronously retrieves visible textual content from the page's DOM,
+    excluding non-relevant or noisy elements (e.g., <script>, <style>, <noscript>, or
+    other tags defined in the global `soup_tag_blocklist`). It ensures the DOM is 
+    sufficiently loaded before evaluation and returns a trimmed text version of the 
+    document body.
+
+    The JavaScript snippet executed in the browser recursively traverses the DOM to
+    collect text nodes, while respecting the defined tag blocklist. The resulting
+    content is concatenated into a single string and truncated to `MAX_WEBCONTENT_SIZE`
+    characters for memory efficiency.
+
+    Args:
+        page (playwright.async_api.Page): 
+            A Playwright page instance representing the loaded webpage.
+
+    Returns:
+        str: 
+            A cleaned and size-limited string containing the visible textual content 
+            of the page. Returns an empty string if the load state could not be reached 
+            or if extraction fails.
+
+    Notes:
+        - The function waits for the `"domcontentloaded"` state (up to 10 seconds) 
+          before attempting to extract content.
+        - Uses global variables:
+            - `soup_tag_blocklist`: A set of HTML tag names to skip during extraction.
+            - `MAX_WEBCONTENT_SIZE`: Maximum allowed content length (in characters).
+            - `DEBUG_PW`: Enables Playwright debugging logs when True.
+        - Broad exceptions are intentionally caught to ensure robustness during 
+          large-scale crawling or scraping operations.
+
+    """    
     try:
         # Try waiting a little, but don't block forever
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=10000)
-        except Exception as e:
-            pass
-            #print(f"[WARN] Load state not reached for {page.url}: {e}")
+        except Exception as e: # pylint: disable=broad-exception-caught
+            if DEBUG_PW:
+                print(f"[WARN] Load state not reached for {page.url}: {e}")
+                return ""
 
         js = f"""
         () => {{
@@ -2435,9 +2467,10 @@ async def get_min_webcontent_page(page) -> str:
         combined_text = " ".join(text_parts)
         return combined_text[:MAX_WEBCONTENT_SIZE]
 
-    except Exception as e:
-        #print(f"[WARN] Failed extracting minimal webcontent from {page.url}: {e}")
-        return ""
+    except Exception as e: # pylint: disable=broad-exception-caught
+        if DEBUG_PW:
+            print(f"[WARN] Failed extracting minimal webcontent from {page.url}: {e}")
+            return ""
 
 
 def is_open_directory(content, content_url):
