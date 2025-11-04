@@ -20,7 +20,7 @@ import chardet
 import numpy as np
 import psutil
 from fake_useragent import UserAgent
-from elasticsearch import Elasticsearch, helpers
+from elasticsearch import Elasticsearch, helpers, NotFoundError
 from elasticsearch.exceptions import RequestError
 from PIL import Image, UnidentifiedImageError
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
@@ -427,6 +427,7 @@ content_type_video_regex = [
         r"^video/mp4$",
         r"^video/ogg$",
         r"^video/f4v$",
+        r"^video/asf$",
         r"^video/3gpp$",
         r"^video/m2ts$",
         r"^video/webm$",
@@ -2322,7 +2323,16 @@ async def content_type_images(args):
                             "resolution":npixels }
                         }
         except UnidentifiedImageError as e:
-            results["crawledlinks"].add(args['url'])
+            return {args['url']:
+                    {
+                    "url":args['url'],
+                    "content_type":args['content_type'],
+                    "source":"content_type_images_unidentified_image_error",
+                    "isopendir":False,
+                    "visited":True,
+                    "parent_host":args['parent_host'],
+                    }
+                    }
         except Image.DecompressionBombError as e:
             return {args['url']:
                     {
@@ -2332,7 +2342,7 @@ async def content_type_images(args):
                     "isopendir":False,
                     "visited":True,
                     "parent_host":args['parent_host'],
-                    "resolution":npixels }
+                    }
                     }
         except OSError:
             return {args['url']:
@@ -2343,9 +2353,8 @@ async def content_type_images(args):
                     "isopendir":False,
                     "visited":True,
                     "parent_host":args['parent_host'],
-                    "resolution":npixels }
                     }
-
+                    }
     return { args['url']:
             {
                 "url":args['url'],
@@ -2387,6 +2396,30 @@ def is_host_block_listed(url):
     return False
 
 def sanitize_content_type(content_type):
+    """
+    Cleans and normalizes a raw Content-Type header value.
+
+    This function standardizes Content-Type strings extracted from HTTP responses
+    by removing unnecessary prefixes, parameters, whitespace, and quotation marks.
+    It ensures the result follows the standard MIME format `type/subtype`, such as 
+    `text/html` or `application/pdf`.
+
+    Args:
+        content_type (str): 
+            The raw Content-Type string (possibly including prefixes, quotes, or 
+            parameters, e.g., `"Content-Type: text/html; charset=UTF-8"`).
+
+    Returns:
+        str:
+            A cleaned MIME type string in the form `type/subtype`, or an empty 
+            string if the input is invalid or empty.
+
+    Notes:
+        - Removes prefixes like `"Content-Type:"` (case-insensitive).
+        - Strips quotes and trims whitespace.
+        - Removes optional parameters such as charset or boundary definitions.
+        - Intended for use in crawlers, downloaders, and content-type filtering logic.
+    """    
     content_type = content_type.strip()
     content_type = re.sub(r'^"(.*)"$', r"\1", content_type)  # remove surrounding quotes
     content_type = re.sub(r'^content-type:\s*', '', content_type, flags=re.I)  # remove prefix
@@ -2815,6 +2848,7 @@ def deduplicate_links_vs_content_es(
     print(f"Deduplication done. Deleted {deleted_total} docs from {links_index_pattern}.")
     return deleted_total
 
+
 # pylint: disable=too-many-branches,too-many-locals,too-many-statements
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS): 
     """
@@ -2960,7 +2994,6 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
                 presults = preprocess_crawler_data(results)
                 db.save_batch(presults)
                 results = {"crawledcontent": {}, "crawledlinks": set()}
-
 
 
 # pylint: disable=too-many-branches,too-many-locals
