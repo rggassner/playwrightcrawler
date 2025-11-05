@@ -975,48 +975,108 @@ def db_create_monthly_indexes(db=None):
     return True
     #return urls_index, content_index
 
-def get_urls_by_random_host_prefix(db, size=RANDOM_SITES_QUEUE):
+def get_urls_by_random_timestamp_and_prefix(db, size=RANDOM_SITES_QUEUE, max_attempts=20):
     """
-    Pick a random character, collect one random URL per host
-    whose hostname starts with that character.
+    Efficiently sample up to `size` random URLs (one per host) from Elasticsearch.
+
+    Strategy:
+      1. Pick a random character (a-z, 0-9) to filter hostnames by prefix.
+      2. Choose a random timestamp between the earliest and latest document.
+      3. Use `search_after` pagination to fetch results in small pages,
+         stopping once enough unique hosts are collected or the index ends.
+
+    This approach avoids a full index scan, maintains randomness both
+    temporally and alphabetically, and scales efficiently to tens of millions
+    of URLs.
+
+    Args:
+        db: Elasticsearch wrapper (must have `db.es` client).
+        size (int): Number of unique host URLs to collect.
+        max_attempts (int): Number of random timestamps to try before giving up.
+
+    Returns:
+        list[str]: A shuffled list of selected URLs (one per host).
     """
     urls_index = f"{LINKS_INDEX}-*"
     host_to_url = {}
 
-    # Step 1: pick a random starting char (a-z, 0-9)
+    # Step 1: pick a random host prefix
     chars = "abcdefghijklmnopqrstuvwxyz0123456789"
     chosen_char = random.choice(chars)
     print(f"[CHAR PICK] Filtering hosts starting with '{chosen_char}'")
 
-    # Step 2: scan ES
-    query = {"query": {"match_all": {}}}
-    for doc in helpers.scan(db.es, index=urls_index, query=query):
-        url = doc["_source"].get("url")
-        if not url:
-            continue
-        host = urlsplit(url).hostname
-        if not host:
-            continue
+    # Step 2: get timestamp range
+    aggs_query = {
+        "size": 0,
+        "aggs": {
+            "min_date": {"min": {"field": "created_at"}},
+            "max_date": {"max": {"field": "created_at"}}
+        }
+    }
+    stats = db.es.search(index=urls_index, body=aggs_query)
+    min_ts = stats["aggregations"]["min_date"]["value"]
+    max_ts = stats["aggregations"]["max_date"]["value"]
 
-        # Filter hosts by chosen char
-        if not host.lower().startswith(chosen_char):
-            continue
+    if not min_ts or not max_ts:
+        print("[WARN] Could not determine timestamp range")
+        return []
 
-        # Reservoir sampling to keep one URL per host
-        if host not in host_to_url:
-            host_to_url[host] = url
-        else:
-            if random.random() < 0.5:
-                host_to_url[host] = url
+    # Step 3: sample multiple random time slices until enough URLs are gathered
+    for attempt in range(max_attempts):
+        random_ts = int(random.uniform(min_ts, max_ts))
+        print(f"[RANDOM DATE] Attempt {attempt+1}/{max_attempts} from {random_ts}")
 
-    # Step 3: shuffle and cut
+        query = {
+            "size": 500,  # page size
+            "query": {
+                "bool": {
+                    "must": [
+                        {"range": {"created_at": {"gte": random_ts}}},
+                        {"prefix": {"host.keyword": chosen_char}}
+                    ]
+                }
+            },
+            "sort": [
+                {"created_at": "asc"},
+                {"url.keyword": "asc"}
+            ]
+        }
+
+        last_sort = None
+        while len(host_to_url) < size:
+            if last_sort:
+                query["search_after"] = last_sort
+
+            res = db.es.search(index=urls_index, body=query)
+            hits = res["hits"]["hits"]
+            if not hits:
+                break
+
+            for doc in hits:
+                src = doc["_source"]
+                host = src.get("host")
+                url = src.get("url")
+                if not host or not url:
+                    continue
+
+                # Keep only one URL per host (replace with small probability)
+                if host not in host_to_url or random.random() < 0.3:
+                    host_to_url[host] = url
+
+                if len(host_to_url) >= size:
+                    break
+
+            last_sort = hits[-1]["sort"]
+
+        if len(host_to_url) >= size:
+            break
+
+    # Step 4: shuffle final list
     all_urls = list(host_to_url.values())
     random.shuffle(all_urls)
+    print(f"[DONE] Collected {len(all_urls)} URLs from prefix '{chosen_char}'")
 
-    if len(all_urls) > size:
-        all_urls = all_urls[:size]
-
-    return all_urls
+    return all_urls[:size]
 
 
 def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) -> bool:
@@ -1060,81 +1120,101 @@ def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) 
                 return True
     return False
 
-
 def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
+    """
+    Efficiently retrieve a random sample of URLs, one per host, using Elasticsearch search_after pagination.
+
+    This version avoids scanning the entire index by:
+    1. Selecting a random timestamp as a pivot point.
+    2. Fetching documents in sorted order by timestamp using search_after.
+    3. Keeping only one random URL per host to ensure wide domain coverage.
+
+    Args:
+        db: Elasticsearch database wrapper with an `es` client attribute.
+        size (int): Maximum number of URLs to return.
+
+    Returns:
+        list[str]: A list of up to `size` URLs, each from a unique host.
+    """
     urls_index = f"{LINKS_INDEX}-*"
     host_to_url = {}
+    batch_size = 500
 
-    # Scan the entire index, but keep only one URL per host
-    query = {"query": {"match_all": {}}}
-    for doc in helpers.scan(db.es, index=urls_index, query=query):
-        url = doc['_source'].get('url')
-        if not url:
-            continue
-        host = urlsplit(url).hostname
-        if not host:
-            continue
+    # Pick a random timestamp from the dataset
+    ts_query = {
+        "size": 1,
+        "query": {"match_all": {}},
+        "sort": [{"created_at": "asc"}],
+        "_source": ["created_at"]
+    }
+    first = db.es.search(index=urls_index, body=ts_query)
+    ts_query["sort"] = [{"created_at": "desc"}]
+    last = db.es.search(index=urls_index, body=ts_query)
 
-        # Reservoir sampling: randomly keep one URL per host
-        if host not in host_to_url:
-            host_to_url[host] = url
-        else:
-            if random.random() < 0.5:
-                host_to_url[host] = url
+    if not first["hits"]["hits"] or not last["hits"]["hits"]:
+        return []
 
-    all_urls = list(host_to_url.values())
-    random.shuffle(all_urls)  # <--- ensure random order every time
+    first_ts = first["hits"]["hits"][0]["_source"]["created_at"]
+    last_ts = last["hits"]["hits"][0]["_source"]["created_at"]
 
-    if len(all_urls) > size:
-        all_urls = all_urls[:size]  # already shuffled, so this is a random cut
+    # Choose a random timestamp between first and last
+    if isinstance(first_ts, str):
+        import dateutil.parser
+        from datetime import datetime
+        first_ts = dateutil.parser.isoparse(first_ts)
+        last_ts = dateutil.parser.isoparse(last_ts)
+    random_ts = first_ts + (last_ts - first_ts) * random.random()
 
-    return all_urls
-
-def get_urls_from_least_populated_hosts(db, size=RANDOM_SITES_QUEUE):
-    es = db.es
-    urls_index = f"{LINKS_INDEX}-*"
-
-    # Step 1: Aggregate by host with min_doc_count = 1
-    aggs_query = {
-        "size": 0,
-        "aggs": {
-            "by_host": {
-                "terms": {
-                    "field": "host.keyword",
-                    "size": size * 5,  # fetch more buckets to sample from
-                    "order": {"_count": "asc"}  # fewest URLs first
-                }
+    # Query for URLs newer than the random timestamp
+    query = {
+        "size": batch_size,
+        "query": {
+            "range": {
+                "created_at": {"gte": random_ts.isoformat()}
             }
-        }
+        },
+        "sort": [{"created_at": "asc"}],
+        "_source": ["url"]
     }
 
-    agg_result = es.search(index=urls_index, body=aggs_query)
-    buckets = agg_result["aggregations"]["by_host"]["buckets"]
+    total_fetched = 0
+    search_after = None
 
-    host_to_url = {}
+    while total_fetched < size:
+        if search_after:
+            query["search_after"] = search_after
 
-    # Step 2: For each low-populated host, get one URL
-    for bucket in buckets:
-        host = bucket["key"]
-
-        query = {
-            "size": 1,
-            "query": {"term": {"host.keyword": host}},
-            "_source": ["url"]
-        }
-        hit = es.search(index=urls_index, body=query)["hits"]["hits"]
-        if hit:
-            url = hit[0]["_source"]["url"]
-            host_to_url[host] = url
-
-        if len(host_to_url) >= size:
+        response = db.es.search(index=urls_index, body=query)
+        hits = response.get("hits", {}).get("hits", [])
+        if not hits:
             break
 
-    # Step 3: Shuffle result to avoid bias
-    all_urls = list(host_to_url.values())
-    random.shuffle(all_urls)
+        for doc in hits:
+            url = doc["_source"].get("url")
+            if not url:
+                continue
 
-    return all_urls
+            host = urlsplit(url).hostname
+            if not host:
+                continue
+
+            # Keep only one random URL per host
+            if host not in host_to_url or random.random() < 0.5:
+                host_to_url[host] = url
+
+            if len(host_to_url) >= size:
+                break
+
+        total_fetched += len(hits)
+        search_after = hits[-1]["sort"] if hits else None
+
+        if not search_after:
+            break
+
+    urls = list(host_to_url.values())
+    random.shuffle(urls)
+    return urls[:size]
+
 
 def get_oldest_host_domains(db, size=RANDOM_SITES_QUEUE):
     urls_index = f"{LINKS_INDEX}-*"
@@ -2034,126 +2114,6 @@ async def content_type_download(args):
         "parent_host": args['parent_host'] }
     }
 
-def remove_blocked_hosts_from_es_db(db):
-    compiled_blocklist = [re.compile(pattern) for pattern in HOST_REGEX_BLOCK_LIST]
-    def is_blocked(host):
-        return any(regex.search(host) for regex in compiled_blocklist)
-    def delete_from_index(index_pattern: str, label: str) -> int:
-        print(f"Deleting blocked hosts from {label}")
-        deleted = 0
-        query = {"query": {"match_all": {}}}
-        for doc in helpers.scan(db.es, index=index_pattern, query=query):
-            url = doc["_source"].get("url")
-            if not url:
-                continue
-            host = urlsplit(url).hostname or ""
-            if is_blocked(host):
-                db.es.delete(index=doc["_index"], id=doc["_id"])
-                print(f"Deleted: {url} (from {doc['_index']})")
-                deleted += 1
-        return deleted
-    total_deleted = 0
-    total_deleted += delete_from_index(f"{LINKS_INDEX}-*", LINKS_INDEX)
-    total_deleted += delete_from_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)
-    print(f"\nDone. Total deleted: {total_deleted}")
-
-def remove_empty_content_type_from_es_db(db):
-    print(f"Starting safe bulk delete of empty content_type docs from {CONTENT_INDEX}")
-
-    query = {
-        "query": {
-            "bool": {
-                "must": [
-                    {
-                        "bool": {
-                            "should": [
-                                {"term": {"content_type.keyword": ""}},
-                                {"bool": {"must_not": {"exists": {"field": "content_type.keyword"}}}}
-                            ]
-                        }
-                    },
-                    {"term": {"visited": False}}
-                ]
-            }
-        }
-    }
-
-    try:
-        # Keep it foreground: wait_for_completion=True
-        response = db.es.delete_by_query(
-            index=f"{CONTENT_INDEX}-*",
-            body=query,
-            refresh=True,
-            wait_for_completion=True,  # block until it's done
-            slices="auto",             # parallelize internally
-            conflicts="proceed",
-            timeout="2m"               # extend if your deletes are heavy
-        )
-
-        deleted = response.get("deleted", 0)
-        print(f"Foreground delete finished. Deleted: {deleted}")
-        return deleted
-
-    except Exception as e:
-        print(f"Error in bulk delete: {e}")
-        return 0
-
-
-def remove_blocked_urls_from_es_db(db):
-    # Compile path-based regex block list
-    compiled_url_blocklist = [re.compile(pattern) for pattern in URL_REGEX_BLOCK_LIST]
-
-    def is_blocked_path(path: str) -> bool:
-        return any(regex.search(path) for regex in compiled_url_blocklist)
-
-    def process_index(index_pattern: str, label: str) -> int:
-        deleted = 0
-        query = {"query": {"match_all": {}}}
-
-        print(f"Deleting blocked URLs from {label}")
-
-        for doc in helpers.scan(db.es, index=index_pattern, query=query):
-            url = doc["_source"].get("url")
-            if not url:
-                continue
-            path = urlsplit(url).path or ""
-            if is_blocked_path(path):
-                db.es.delete(index=doc["_index"], id=doc["_id"])
-                print(f"Deleted by path: {url}")
-                deleted += 1
-
-        return deleted
-
-    total_deleted = 0
-    total_deleted += process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)   # <-- added ()
-    total_deleted += process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)  # <-- added ()
-
-    print(f"\nDone. Total deleted by path: {total_deleted}")
-
-def remove_repeated_segments_urls_from_es_db(db):
-    # Compile path-based regex block list
-    def process_index(index_pattern: str, label: str) -> int:
-        deleted = 0
-        query = {"query": {"match_all": {}}}
-
-        print(f"Deleting blocked URLs from {label}")
-
-        for doc in helpers.scan(db.es, index=index_pattern, query=query):
-            url = doc["_source"].get("url")
-            if not url:
-                continue
-            if has_repeated_segments(url):
-                db.es.delete(index=doc["_index"], id=doc["_id"])
-                print(f"Deleted by repeated segments: {url}")
-                deleted += 1
-
-        return deleted
-
-    total_deleted = 0
-    total_deleted += process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)   # <-- added ()
-    total_deleted += process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)  # <-- added ()
-
-    print(f"\nDone. Total deleted by segments: {total_deleted}")
 
 async def process_input_url_files(db):
     if not os.path.isdir(INPUT_FOLDER):
@@ -2215,43 +2175,162 @@ async def process_input_url_files(db):
             print(f"File fully processed and removed: {file_to_process}")
 
 
-def remove_invalid_urls(db):
-    def process_index(index_pattern: str, label: str) -> int:
+def cleanup_elasticsearch_indexes(
+    db,
+    remove_repeated_segments=False,
+    remove_empty_ctype=False,
+    remove_blocked_hosts=False,
+    remove_blocked_urls=False,
+    remove_invalid_urls=False,
+    batch_size=2000
+):
+    """
+    Unified cleanup for Elasticsearch indexes.
+
+    Iterates through all documents (using search_after for scalability)
+    and applies multiple cleanup rules in one pass.
+
+    Args:
+        db: Elasticsearch wrapper (must provide `es` client).
+        remove_repeated_segments (bool): Remove URLs with repeated path segments.
+        remove_empty_ctype (bool): Remove docs missing or empty content_type.
+        remove_blocked_hosts (bool): Remove docs from hosts matching blocklist.
+        remove_blocked_urls (bool): Remove docs whose paths match blocklist.
+        remove_invalid_urls (bool): Remove malformed or sanitized URLs.
+        batch_size (int): Number of docs to fetch per request.
+
+    Returns:
+        dict: Summary with counts per cleanup rule.
+    """
+    es = db.es
+
+    # Precompile regexes for blocklist rules
+    host_blocklist = [re.compile(p) for p in HOST_REGEX_BLOCK_LIST] if remove_blocked_hosts else []
+    url_blocklist = [re.compile(p) for p in URL_REGEX_BLOCK_LIST] if remove_blocked_urls else []
+
+    def is_blocked_host(host):
+        return any(r.search(host) for r in host_blocklist)
+
+    def is_blocked_path(path):
+        return any(r.search(path) for r in url_blocklist)
+
+    results = {
+        "repeated_segments": 0,
+        "empty_ctype": 0,
+        "blocked_hosts": 0,
+        "blocked_urls": 0,
+        "invalid_urls": 0,
+    }
+
+    def process_index(index_pattern: str, label: str):
+        nonlocal results
         deleted = 0
-        query = {"query": {"match_all": {}}}
+        processed = 0
+        search_after = None
 
-        print(f"Deleting invalid URLs from {label}")
+        print(f"Cleaning index: {label}")
 
-        for doc in helpers.scan(db.es, index=index_pattern, query=query, size=1000, scroll="5m" ):
-            url = doc["_source"].get("url")
-            if not url:
-                continue
+        base_query = {
+            "size": batch_size,
+            "query": {"match_all": {}},
+            "_source": ["url", "host", "content_type", "visited"],
+            "sort": [
+                {"created_at": "asc"},
+                {"url.keyword": "asc"}
+            ]
+        }
 
-            parsed = urlparse(url)
-            pre_url = url
-            url = sanitize_url(url)
+        while True:
+            if search_after:
+                base_query["search_after"] = search_after
 
-            # Remove if URL changed after sanitization
-            if pre_url != url:
-                print(f"Deleted sanitized URL: -{pre_url}- inserting -{url}-")
-                results["crawledlinks"].add(url)
-                db.es.delete(index=doc["_index"], id=doc["_id"])
-                deleted += 1
-                continue
+            try:
+                res = es.search(index=index_pattern, body=base_query)
+            except Exception as e:
+                print(f"[{label}] Search error: {e}")
+                break
 
-            # Remove if completely missing a scheme (e.g., "www.example.com")
-            if not parsed.scheme:
-                print(f"Deleted URL with no scheme: -{url}-")
-                db.es.delete(index=doc["_index"], id=doc["_id"])
-                deleted += 1
+            hits = res.get("hits", {}).get("hits", [])
+            if not hits:
+                break
 
+            ids_to_delete = []
+            for doc in hits:
+                src = doc["_source"]
+                url = src.get("url")
+                if not url:
+                    continue
+
+                host = src.get("host") or urlsplit(url).hostname or ""
+                path = urlsplit(url).path or ""
+                ctype = src.get("content_type")
+                visited = src.get("visited", False)
+
+                # --- Apply cleanup rules ---
+                if remove_repeated_segments and has_repeated_segments(url):
+                    results["repeated_segments"] += 1
+                    ids_to_delete.append(doc["_id"])
+                    continue
+
+                if remove_empty_ctype and (not ctype or ctype == "") and not visited:
+                    results["empty_ctype"] += 1
+                    ids_to_delete.append(doc["_id"])
+                    continue
+
+                if remove_blocked_hosts and is_blocked_host(host):
+                    results["blocked_hosts"] += 1
+                    ids_to_delete.append(doc["_id"])
+                    continue
+
+                if remove_blocked_urls and is_blocked_path(path):
+                    results["blocked_urls"] += 1
+                    ids_to_delete.append(doc["_id"])
+                    continue
+
+                if remove_invalid_urls:
+                    parsed = urlparse(url)
+                    sanitized = sanitize_url(url)
+                    if parsed.scheme == "" or sanitized != url:
+                        results["invalid_urls"] += 1
+                        ids_to_delete.append(doc["_id"])
+                        continue
+
+            # --- Perform batched deletion ---
+            if ids_to_delete:
+                try:
+                    resp = es.delete_by_query(
+                        index=index_pattern,
+                        body={"query": {"ids": {"values": ids_to_delete}}},
+                        slices="auto",
+                        conflicts="proceed",
+                        refresh=False,
+                        wait_for_completion=True
+                    )
+                    deleted += resp.get("deleted", 0)
+                except Exception as e:
+                    print(f"[{label}] Delete error: {e}")
+
+            processed += len(hits)
+            search_after = hits[-1]["sort"]
+
+            print(f"  → Processed {processed:,} | Deleted {deleted:,}")
+
+            if len(hits) < batch_size:
+                break
+
+        print(f"Done cleaning {label}. Deleted {deleted:,} docs.")
         return deleted
 
-    total_deleted = 0
-    total_deleted += process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)
-    total_deleted += process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)
+    process_index(f"{LINKS_INDEX}-*", LINKS_INDEX)
+    process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)
 
-    print(f"\nDone. Total invalid URLs deleted: {total_deleted}")
+    print("\n Cleanup summary:")
+    for k, v in results.items():
+        print(f"  {k}: {v}")
+
+    print(f" Total deleted across all rules: {sum(results.values()):,}")
+    return results
+
 
 def get_min_webcontent(soup) -> str:
     text_parts = [
@@ -2290,7 +2369,7 @@ async def content_type_images(args):
                 image = n2.preprocess_image(img, n2.Preprocessing.YAHOO)
                 inputs = np.expand_dims(image, axis=0)
                 predictions = model.predict(inputs, verbose=0)
-                sfw_probability, nsfw_probability = predictions[0]
+                _, nsfw_probability = predictions[0]
                 if nsfw_probability > NSFW_MIN_PROBABILITY:
                     print('porn {} {}'.format(nsfw_probability, args['url']))
                     if DOWNLOAD_NSFW:
@@ -2717,7 +2796,7 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
 
     This function dynamically chooses one domain selection method based on configurable
     probability weights defined in `METHOD_WEIGHTS`. Each method represents a different
-    strategy for selecting host domains (e.g., least populated, oldest, random, or by prefix).
+    strategy for selecting host domains (e.g., oldest, random, or by prefix).
     If no custom weights are provided, all methods are assigned equal probability.
 
     The selected method is executed to retrieve up to `size` unvisited domains from the
@@ -2746,7 +2825,6 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
     # Default weights if none provided
     if METHOD_WEIGHTS is None:
         method_weights = {
-            "fewest_urls":  1,
             "oldest":       1,
             "host_prefix":  1,
             "random":       1
@@ -2768,10 +2846,9 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
 
     # Set up method mapping
     method_functions = {
-        "fewest_urls": lambda: get_urls_from_least_populated_hosts(db, size=size),
         "oldest": lambda: get_oldest_host_domains(db, size=size),
-        "host_prefix": lambda: get_urls_by_random_host_prefix(db, size=size),
-        "random": lambda: get_random_host_domains(db, size=size)
+        "random": lambda: get_random_host_domains(db, size=size),
+        "host_prefix": lambda: get_urls_by_random_timestamp_and_prefix(db, size=size)
     }
 
     try:
@@ -2796,250 +2873,269 @@ def deduplicate_links_vs_content_es(
     batch_size=5000
 ):
     """
-    Deletes all docs from links_index_pattern that already exist in content_index_pattern
-    by comparing the _id field (url_hash).
-    Handles large indices with scroll and batches.
+    Deletes all documents from `links_index_pattern` that already exist in 
+    `content_index_pattern` by comparing document IDs (_id field).
+
+    Scroll-free, search_after-based version that adapts automatically
+    to very large indices.
+
+    Args:
+        db: Elasticsearch database wrapper.
+        links_index_pattern (str): Index pattern for links.
+        content_index_pattern (str): Index pattern for content.
+        batch_size (int): Number of IDs to fetch and delete per iteration.
+
+    Returns:
+        int: Total number of deleted documents.
     """
     es = db.es
-    print(f"Fetching _ids from {content_index_pattern} to deduplicate against {links_index_pattern}...")
+    print(f" Deduplicating '{links_index_pattern}' against '{content_index_pattern}'...")
+
+    # --- Self-tuning max_docs based on content index size ---
+    try:
+        content_count = es.count(index=content_index_pattern)["count"]
+        max_docs = int(content_count * 1.2)  # +20% buffer
+        print(f"[INFO] Content index has {content_count:,} docs → max_docs={max_docs:,}")
+    except Exception as e:
+        print(f"[WARN] Could not determine content index size: {e}")
+        max_docs = 10_000_000  # fallback
 
     deleted_total = 0
+    processed = 0
+    search_after = None
 
-    # --- Initialize scroll search ---
-    scroll = es.search(
-        index=content_index_pattern,
-        scroll="2m",
-        body={
-            "size": batch_size,
-            "query": {"match_all": {}},
-            "_source": False
-        }
-    )
 
-    scroll_id = scroll["_scroll_id"]
-    hits = scroll["hits"]["hits"]
+    query = {
+        "size": batch_size,
+        "query": {"match_all": {}},
+        "_source": False,
+        "sort": [
+            {"created_at": "asc"},       # primary sort
+            {"url.keyword": "asc"}      # tie-breaker
+        ]
+    }
 
-    while hits:
-        # Extract IDs
+    while processed < max_docs:
+        if search_after:
+            query["search_after"] = search_after
+
+        try:
+            resp = es.search(index=content_index_pattern, body=query)
+        except Exception as e:
+            print(f"[deduplicate_links_vs_content_es] Elasticsearch search error: {e}")
+            break
+
+        hits = resp.get("hits", {}).get("hits", [])
+        if not hits:
+            break
+
         ids = [h["_id"] for h in hits]
+        if not ids:
+            break
 
-        if ids:
+        # Delete matching IDs from links index
+        try:
             response = es.delete_by_query(
                 index=links_index_pattern,
                 body={"query": {"ids": {"values": ids}}},
                 slices="auto",
                 conflicts="proceed",
-                refresh=True,
-                wait_for_completion=True,
+                refresh=False,
+                wait_for_completion=True
             )
             deleted_total += response.get("deleted", 0)
+        except Exception as e:
+            print(f"[deduplicate_links_vs_content_es] Delete query failed: {e}")
 
-        # Fetch next scroll batch
-        scroll = es.scroll(scroll_id=scroll_id, scroll="2m")
-        scroll_id = scroll["_scroll_id"]
-        hits = scroll["hits"]["hits"]
+        processed += len(ids)
+        search_after = hits[-1]["sort"] if hits else None
 
-    # Clear scroll
-    try:
-        es.clear_scroll(scroll_id=scroll_id)
-    except Exception as e: # pylint: disable=broad-exception-caught
-        print(f"[deduplicate_links_vs_content_es] {e}")
+        print(f"  → Processed {processed:,} | Deleted {deleted_total:,} so far...")
 
-    print(f"Deduplication done. Deleted {deleted_total} docs from {links_index_pattern}.")
+        if len(hits) < batch_size:
+            break
+
+    print(f"Deduplication complete. Total deleted: {deleted_total:,} docs.")
     return deleted_total
 
-
-# pylint: disable=too-many-branches,too-many-locals,too-many-statements
-async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS): 
+async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     """
     Perform a fast crawling pass on URLs with specific file extensions.
 
-    This function queries the Elasticsearch database for URLs that match 
-    configured file extensions (from `EXTENSION_MAP`) and performs asynchronous, 
-    high-speed crawling on them using Playwright. It is designed for efficiently 
-    collecting non-HTML content (e.g., PDFs, images, videos, etc.) while avoiding 
-    redundancy and excessive load.
-
-    Workflow:
-        1. Deduplicates links already present in the content index.
-        2. Randomizes the order of file extensions to distribute crawling effort.
-        3. For each extension:
-           - Queries Elasticsearch for matching URLs (regex or wildcard, depending on configuration).
-           - Iterates through results using Elasticsearch's scroll API.
-           - Selects at most one unique URL per host to minimize host bias.
-           - Uses asyncio semaphores to run multiple crawlers concurrently (up to `max_workers`).
-           - Processes crawler results (content and links) and stores them back in the database.
-        4. Cleans up the Elasticsearch scroll context after processing.
+    New optimized version:
+    - Deduplicates links vs content.
+    - Picks a random timestamp pivot in Elasticsearch.
+    - Uses search_after to collect up to 10,000 candidate URLs.
+    - Filters URLs by extensions defined in EXTENSION_MAP (Python side).
+    - Collapses to one random URL per host.
+    - Runs concurrent async crawling using Playwright.
 
     Args:
-        db: 
-            Database wrapper that provides Elasticsearch access and a `save_batch()` method 
-            for saving results.
-        max_workers (int, optional): 
-            Maximum number of concurrent async tasks (default: `MAX_FAST_WORKERS`).
+        db: Database wrapper that provides Elasticsearch access and a save_batch() method.
+        max_workers (int, optional): Maximum number of concurrent async tasks.
 
-    Notes:
-        - The crawling strategy aims to quickly gather downloadable content 
-          (e.g., `.pdf`, `.zip`, `.mp4`) using lightweight Playwright requests.
-        - Error handling is broad to prevent interruptions from isolated failures.
-        - Uses randomization and host deduplication to spread requests evenly across domains.
-
-    Raises:
-        Exception: Any unexpected error during crawling or Elasticsearch operations 
-                   is caught and logged, but not re-raised.
-
-    """    
-    print("Housekeeping links that are already in content.")
+    Returns:
+        None
+    """
+    print("Housekeeping links that are already in content...")
     deduplicate_links_vs_content_es(db)
 
-    shuffled_extensions = list(EXTENSION_MAP.items())
-    random.shuffle(shuffled_extensions)
+    urls_index = f"{LINKS_INDEX}-*"
+    target_count = 50_000
+    batch_size = 500
 
-    async with async_playwright() as playwright: 
-        for extension, content_type_patterns in shuffled_extensions: # pylint: disable=too-many-nested-blocks
-            await asyncio.sleep(FAST_DELAY)
-            print(f"[FAST CRAWLER] Extension: {extension}")
-            xtension = extension[1:]
+    # --- Determine time range ---
+    ts_query = {
+        "size": 1,
+        "query": {"match_all": {}},
+        "sort": [{"created_at": "asc"}],
+        "_source": ["created_at"]
+    }
+    first = db.es.search(index=urls_index, body=ts_query)
+    ts_query["sort"] = [{"created_at": "desc"}]
+    last = db.es.search(index=urls_index, body=ts_query)
 
-            if STRICT_EXTENSION_QUERY:
-                query = {
-                    "bool": {
-                        "must": [
-                            {
-                                "regexp": {
-                                    "url.keyword": f".*\\/\\/.*\\/.*\\.{xtension}"
-                                }
-                            }
-                        ]
-                    }
-                }
-            else:
-                query = {
-                    "bool": {
-                        "must": [
-                            {"wildcard": {"url": f"*{extension}"}}
-                        ]
-                    }
-                }
+    if not first["hits"]["hits"] or not last["hits"]["hits"]:
+        print("No documents found in index.")
+        return
 
-            try:
-                scroll_size = 5000
-                scroll = db.es.search(
-                    index=f"{LINKS_INDEX}-*",
-                    query=query,
-                    size=scroll_size,
-                    scroll="2m"
-                )
-                scroll_id = scroll["_scroll_id"]
-                hits = scroll["hits"]["hits"]
+    from datetime import datetime
+    import dateutil.parser
+    first_ts = dateutil.parser.isoparse(first["hits"]["hits"][0]["_source"]["created_at"])
+    last_ts = dateutil.parser.isoparse(last["hits"]["hits"][0]["_source"]["created_at"])
 
-                while hits:
-                    urls = [hit["_source"]["url"] for hit in hits if "url" in hit["_source"]]
-                    random.shuffle(urls)
+    random_ts = first_ts + (last_ts - first_ts) * random.random()
+    print(f"[FAST EXTENSION] Random pivot time: {random_ts.isoformat()}")
 
-                    # Track one URL per host
-                    host_seen = set()
-                    unique_urls = []
-                    for url in urls:
-                        host = urlparse(url).hostname
-                        if host and host not in host_seen:
-                            unique_urls.append(url)
-                            host_seen.add(host)
+    # --- Search for candidates after random timestamp ---
+    query = {
+        "size": batch_size,
+        "query": {"range": {"created_at": {"gte": random_ts.isoformat()}}},
+        "sort": [{"created_at": "asc"}],
+        "_source": ["url"]
+    }
 
-                    results = {"crawledcontent": {}, "crawledlinks": set()} # pylint: disable=redefined-outer-name
-                    semaphore = asyncio.Semaphore(max_workers)
+    candidate_urls = []
+    search_after = None
 
-                    async def sem_task(url, ctype_patterns=content_type_patterns, sem=semaphore):
-                        async with sem:
-                            return await fast_extension_crawler(url, ctype_patterns, db, playwright)
+    while len(candidate_urls) < target_count:
+        if search_after:
+            query["search_after"] = search_after
 
+        resp = db.es.search(index=urls_index, body=query)
+        hits = resp.get("hits", {}).get("hits", [])
+        if not hits:
+            break
 
+        for hit in hits:
+            url = hit["_source"].get("url")
+            if not url:
+                continue
+            if "." in url.rsplit("/", 1)[-1]:  # crude filter for possible extension
+                candidate_urls.append(url)
+                if len(candidate_urls) >= target_count:
+                    break
 
-                    tasks = [sem_task(url) for url in unique_urls]
-                    batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+        search_after = hits[-1]["sort"] if hits else None
+        if not search_after:
+            break
 
+    print(f"Collected {len(candidate_urls)} candidate URLs with extensions.")
 
-                    for result in batch_results:
-                        if isinstance(result, Exception):
-                            pass
-                        elif result:
-                            presults = preprocess_crawler_data(result)
-                            if isinstance(presults, list):
-                                for item in presults:
-                                    if "crawledcontent" in item:
-                                        results["crawledcontent"].update(item["crawledcontent"])
-                                    if "crawledlinks" in item:
-                                        results["crawledlinks"].update(item["crawledlinks"])
+    # --- Validate extensions in Python side ---
+    valid_urls = []
+    valid_exts = set(EXTENSION_MAP.keys())
 
-                    if results["crawledcontent"] or results["crawledlinks"]:
-                        db.save_batch([results])
+    for url in candidate_urls:
+        lower_url = url.lower()
+        for ext in valid_exts:
+            if lower_url.endswith(ext):
+                valid_urls.append(url)
+                break
 
-                    scroll = db.es.scroll(scroll_id=scroll_id, scroll="2m")
-                    scroll_id = scroll["_scroll_id"]
-                    hits = scroll["hits"]["hits"]
+    print(f"{len(valid_urls)} URLs matched known extensions.")
 
-                db.es.clear_scroll(scroll_id=scroll_id)
+    # --- Collapse to one URL per host ---
+    host_to_url = {}
+    for url in valid_urls:
+        host = urlparse(url).hostname
+        if not host:
+            continue
+        if host not in host_to_url or random.random() < 0.5:
+            host_to_url[host] = url
 
-            except Exception as e: # pylint: disable=broad-exception-caught
-                print(f"[run_fast_extension_pass] {url} {e}")
-                results["crawledcontent"].update({
-                    url: {
-                        "url": url,
-                        "content_type": "",
-                        "isopendir": False,
-                        "visited": True,
-                        "source": 'run_fast_extension_pass exception',
-                    }
-                })
-                presults = preprocess_crawler_data(results)
-                db.save_batch(presults)
-                results = {"crawledcontent": {}, "crawledlinks": set()}
+    final_urls = list(host_to_url.values())
+    random.shuffle(final_urls)
+    print(f"Collapsed to {len(final_urls)} unique hosts.")
 
+    # --- Async crawling ---
+    async with async_playwright() as playwright:
+        semaphore = asyncio.Semaphore(max_workers)
+        results = {"crawledcontent": {}, "crawledlinks": set()}
+
+        async def sem_task(url):
+            async with semaphore:
+                try:
+                    return await fast_extension_crawler(url, EXTENSION_MAP, db, playwright)
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    print(f"[FAST EXT ERROR] {url}: {e}")
+                    return None
+
+        print(f"Starting async crawl with {max_workers} workers...")
+        tasks = [sem_task(url) for url in final_urls]
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # --- Process results ---
+        for result in batch_results:
+            if isinstance(result, Exception):
+                continue
+            if not result:
+                continue
+
+            presults = preprocess_crawler_data(result)
+            if isinstance(presults, list):
+                for item in presults:
+                    if "crawledcontent" in item:
+                        results["crawledcontent"].update(item["crawledcontent"])
+                    if "crawledlinks" in item:
+                        results["crawledlinks"].update(item["crawledlinks"])
+
+        if results["crawledcontent"] or results["crawledlinks"]:
+            db.save_batch([results])
+
+    print("Fast extension crawling pass complete.")
 
 # pylint: disable=too-many-branches,too-many-locals
-async def fast_extension_crawler(url, content_type_patterns, db, playwright):
+async def fast_extension_crawler(url, EXTENSION_MAP, db, playwright):
     """
     Quickly determines how to handle a given URL based on its Content-Type header,
     downloading files of allowed types and delegating others to the standard crawler.
 
-    This asynchronous function performs a lightweight HEAD request to determine
-    a URL’s content type before deciding whether to:
-    - Download and process the content immediately (for matching file types).
-    - Delegate processing to `get_page()` when the content type is HTML-like or unsupported.
-    - Skip URLs from blocklisted hosts or URLs not in the allow list.
-
-    The function maps each recognized content type regex to a specialized handler
-    (e.g., `content_type_images`, `content_type_docs`) and uses associated download flags
-    (e.g., `DOWNLOAD_PDFS`, `DOWNLOAD_IMAGES`) to control what types of files to fetch.
-
-    Args:
-        url (str): The target URL to inspect or download.
-        content_type_patterns (list[re.Pattern]): List of regex patterns defining
-            acceptable Content-Type values to process quickly.
-        db: Database handle or connection used by the main crawler for persistence.
-        playwright: Playwright browser context or controller, used by fallback functions.
-
-    Behavior:
-        - Performs a HEAD request with randomized User-Agent.
-        - Falls back to `get_page()` if the request fails, response is invalid,
-          or content type is missing or mismatched.
-        - Optionally downloads matching content types according to configured flags.
-        - Updates the global `results["crawledcontent"]` dictionary with parsed results.
-        - Randomly sleeps at the end to add delay variability between requests.
-
-    Notes:
-        - Broad exception handling is intentionally used to avoid breaking
-          async loops during large-scale crawling.
-        - Unknown content types trigger a visible warning message.
-        - The function is intended for high-performance "fast path" crawling
-          of non-HTML resources.
-
-    """    
+    This asynchronous function:
+    - Determines expected content types from the URL extension.
+    - Performs a lightweight HEAD request to check the real Content-Type.
+    - Validates if it matches expected patterns for that extension.
+    - Downloads and processes content if allowed.
+    - Falls back to normal crawler (`get_page`) otherwise.
+    """
+    print(f"[FAST CRAWLER] -{url}-")
     headers = {"User-Agent": UserAgent().random}
 
     async def fallback():
         await get_page(url, playwright, db)
         return
+
+    # --- Determine expected content-type patterns from extension ---
+    url_lower = url.lower()
+    expected_patterns = None
+    for ext, regex_list in EXTENSION_MAP.items():
+        if url_lower.endswith(ext):
+            expected_patterns = regex_list
+            break
+
+    if not expected_patterns:
+        print(f"[FAST CRAWLER] Unknown extension for {url}")
+        return await fallback()
 
     try:
         async with httpx.AsyncClient(
@@ -3049,7 +3145,7 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
             follow_redirects=True,
         ) as client:
             head_resp = await client.head(url)
-    except Exception as e: # pylint: disable=broad-exception-caught
+    except Exception as e:  # pylint: disable=broad-exception-caught
         if DEBUG_PW:
             print(f"[fast_extension_crawler fallback] {e}")
         return await fallback()
@@ -3057,26 +3153,18 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
     if not (200 <= head_resp.status_code < 300):
         return await fallback()
 
-    print(f"-{url}-")
-
     content_type = head_resp.headers.get("Content-Type", "")
     if not content_type:
         return await fallback()
 
     content_type = content_type.lower().split(";")[0].strip()
 
-    if not any(re.match(p, content_type) for p in content_type_patterns):
-        if content_type not in {
-            "text/html",
-            "text/plain",
-            "application/json",
-            "text/javascript",
-        }:
-            print(
-                f"\033[92m[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-\033[0m"
-            )
+    # --- Match against regexes for this extension only ---
+    if not any(re.match(p, content_type) for p in expected_patterns):
+        print(f"\033[92m[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-\033[0m")
         return await fallback()
 
+    # --- Host validation ---
     host = urlparse(url).hostname or ""
     if (
         is_host_block_listed(host)
@@ -3118,7 +3206,7 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
                     ) as client:
                         get_resp = await client.get(url)
                         content = get_resp.content
-                except Exception as e: # pylint: disable=broad-exception-caught
+                except Exception as e:  # pylint: disable=broad-exception-caught
                     if DEBUG_PW:
                         print(f"[fast_extension_crawler] {e}")
                     return
@@ -3140,8 +3228,8 @@ async def fast_extension_crawler(url, content_type_patterns, db, playwright):
             # Executed only if no break happened (no match found)
             print(f"\033[91m[FAST CRAWLER] UNKNOWN type -{url}- -{content_type}-\033[0m")
 
-    except Exception as e: # pylint: disable=broad-exception-caught
-        if DEBUG_PW: 
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        if DEBUG_PW:
             print(f"[fast_extension_crawler] {e}")
 
     await asyncio.sleep(random.uniform(FAST_RANDOM_MIN_WAIT, FAST_RANDOM_MAX_WAIT))
@@ -3435,36 +3523,6 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     results["crawledlinks"].update(page_data["crawledlinks"])
 
 
-def total_memory_usage(process):
-    """
-    Calculate the total memory usage of a process and all its child processes.
-
-    This function retrieves the Resident Set Size (RSS) — the portion of memory 
-    held in RAM — for the given process and recursively includes all of its 
-    child processes. The result is the total physical memory currently consumed 
-    by the process tree.
-
-    Args:
-        process (psutil.Process): 
-            A `psutil.Process` instance representing the root process to measure.
-
-    Returns:
-        float: 
-            The total memory usage in megabytes (MB), including the process 
-            and all its child processes.
-
-    Notes:
-        - Uses `process.memory_info().rss` to measure memory resident in RAM.
-        - Recursively includes all subprocesses spawned by the main process.
-        - Ideal for monitoring multi-process applications that 
-          may spawn instances or worker threads.
-    """    
-    mem = process.memory_info().rss
-    for child in process.children(recursive=True):
-        mem += child.memory_info().rss
-    return mem / (1024**2)  #MB
-
-
 async def monitor_memory(pid, url, stop_event):
     """
     Monitors total system memory usage and stops the current task 
@@ -3640,21 +3698,14 @@ async def main():
         instance = get_instance_number()
         for iteration in range(ITERATIONS):
             if instance == 1:
-                if REMOVE_REPEATED_SEGMENTS:
-                    print(f"Instance {instance}, iteration {iteration}: Removing urls with repeated segments.")
-                    remove_repeated_segments_urls_from_es_db(db)
-                if REMOVE_EMPTY_CTYPE:
-                    print(f"Instance {instance}, iteration {iteration}: Removing urls with empty content_type.")
-                    remove_empty_content_type_from_es_db(db)
-                if REMOVE_BLOCKED_HOSTS:
-                    print(f"Instance {instance}, iteration {iteration}: Removing urls from hosts that are blocklisted.")
-                    remove_blocked_hosts_from_es_db(db)
-                if REMOVE_BLOCKED_URLS:
-                    print(f"Instance {instance}, iteration {iteration}: Removing path blocklisted urls.")
-                    remove_blocked_urls_from_es_db(db)
-                if REMOVE_INVALID_URLS:
-                    print(f"Instance {instance}, iteration {iteration}: Deleting invalid urls.")
-                    remove_invalid_urls(db)
+                cleanup_elasticsearch_indexes(
+                    db,
+                    remove_repeated_segments=REMOVE_REPEATED_SEGMENTS,
+                    remove_empty_ctype=REMOVE_EMPTY_CTYPE,
+                    remove_blocked_hosts=REMOVE_BLOCKED_HOSTS,
+                    remove_blocked_urls=REMOVE_BLOCKED_URLS,
+                    remove_invalid_urls=REMOVE_INVALID_URLS
+                )
                 print(f"Instance {instance}, iteration {iteration}: Checking for input URL files...")
                 await process_input_url_files(db)
                 print(f"Instance {instance}, iteration {iteration}: Let's go full crawler mode.")
