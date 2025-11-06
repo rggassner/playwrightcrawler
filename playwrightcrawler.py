@@ -20,7 +20,7 @@ import chardet
 import numpy as np
 import psutil
 from fake_useragent import UserAgent
-from elasticsearch import Elasticsearch, helpers, NotFoundError
+from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
 from PIL import Image, UnidentifiedImageError
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
@@ -1352,7 +1352,7 @@ class DatabaseConnection:
                 failed_count += 1
                 print("[BULK FAILED] Document:", item)
 
-        #print(f"[BULK] Inserted {len(actions) - failed_count} docs successfully, {failed_count} failed")
+        print(f"[BULK] Inserted {len(actions) - failed_count} docs successfully, {failed_count} failed")
 
 
 
@@ -1579,7 +1579,6 @@ def get_words_from_soup(soup) -> list[str]:
 
 def sanitize_url(
         url,
-        debug=True,
         skip_log_tags=['FINAL_NORMALIZE',
                        'STRIP_WHITESPACE',
                        'NORMALIZE_PATH_SLASHES']):
@@ -1638,12 +1637,10 @@ def sanitize_url(
                 result.append(segments[i + 1])
         return ''.join(result)
 
-    pre_sanitize = url
     if not url or not isinstance(url, str):
         return ""
 
     url = url.strip()
-    pre_sanitize = url
     special_quote_pairs = [
         (r'^"(.*)"$', r'\1'),
         (r"^'(.*)'$", r'\1'),
@@ -3698,14 +3695,14 @@ async def main():
         instance = get_instance_number()
         for iteration in range(ITERATIONS):
             if instance == 1:
-                cleanup_elasticsearch_indexes(
-                    db,
-                    remove_repeated_segments=REMOVE_REPEATED_SEGMENTS,
-                    remove_empty_ctype=REMOVE_EMPTY_CTYPE,
-                    remove_blocked_hosts=REMOVE_BLOCKED_HOSTS,
-                    remove_blocked_urls=REMOVE_BLOCKED_URLS,
-                    remove_invalid_urls=REMOVE_INVALID_URLS
-                )
+                #cleanup_elasticsearch_indexes(
+                #    db,
+                #    remove_repeated_segments=REMOVE_REPEATED_SEGMENTS,
+                #    remove_empty_ctype=REMOVE_EMPTY_CTYPE,
+                #    remove_blocked_hosts=REMOVE_BLOCKED_HOSTS,
+                #    remove_blocked_urls=REMOVE_BLOCKED_URLS,
+                #    remove_invalid_urls=REMOVE_INVALID_URLS
+                #)
                 print(f"Instance {instance}, iteration {iteration}: Checking for input URL files...")
                 await process_input_url_files(db)
                 print(f"Instance {instance}, iteration {iteration}: Let's go full crawler mode.")
