@@ -19,6 +19,7 @@ import urllib3
 import chardet
 import numpy as np
 import psutil
+import dateutil.parser
 from fake_useragent import UserAgent
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
@@ -1281,17 +1282,11 @@ class DatabaseConnection:
     def close(self):
         self.es.close()
 
-    def commit(self):
-        pass
-
-
-
     def search(self, *args, **kwargs):
         return self.es.search(*args, **kwargs)
 
     def scroll(self, *args, **kwargs):
         return self.es.scroll(*args, **kwargs)
-
 
     def _get_index_name(self, base: str) -> str:
         """Return index name with year-month suffix (timezone-aware)."""
@@ -2955,6 +2950,7 @@ def deduplicate_links_vs_content_es(
     print(f"Deduplication complete. Total deleted: {deleted_total:,} docs.")
     return deleted_total
 
+# pylint: disable=too-many-statements,too-many-branches
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     """
     Perform a fast crawling pass on URLs with specific file extensions.
@@ -2996,8 +2992,6 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
         print("No documents found in index.")
         return
 
-    from datetime import datetime
-    import dateutil.parser
     first_ts = dateutil.parser.isoparse(first["hits"]["hits"][0]["_source"]["created_at"])
     last_ts = dateutil.parser.isoparse(last["hits"]["hits"][0]["_source"]["created_at"])
 
@@ -3102,8 +3096,8 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
 
     print("Fast extension crawling pass complete.")
 
-# pylint: disable=too-many-branches,too-many-locals
-async def fast_extension_crawler(url, EXTENSION_MAP, db, playwright):
+# pylint: disable=too-many-branches,too-many-locals,too-many-return-statements
+async def fast_extension_crawler(url, extension_map, db, playwright):
     """
     Quickly determines how to handle a given URL based on its Content-Type header,
     downloading files of allowed types and delegating others to the standard crawler.
@@ -3125,7 +3119,7 @@ async def fast_extension_crawler(url, EXTENSION_MAP, db, playwright):
     # --- Determine expected content-type patterns from extension ---
     url_lower = url.lower()
     expected_patterns = None
-    for ext, regex_list in EXTENSION_MAP.items():
+    for ext, regex_list in extension_map.items():
         if url_lower.endswith(ext):
             expected_patterns = regex_list
             break
