@@ -63,6 +63,7 @@ content_type_octetstream = [
         r"^application/stream$",
         r"^binary/octet-stream$",
         r"^application/download$",
+        r"^application/x-download$",
         r"^application/octetstream$",
         r"^application/octet-stream$",
         r"^application/x-octet-stream$",
@@ -243,6 +244,7 @@ content_type_plain_text_regex = [
 content_type_image_regex = [
         r"^jpg$",
         r"^png$",
+        r"^GIF$",
         r"^jpeg$",
         r"^webp$",
         r"^image$",
@@ -356,9 +358,11 @@ content_type_image_regex = [
         r"^image/heif-sequence$",
         r"^image/png,image/jpeg$",
         r"^image/vnd.sealed.png$",
+        r"^image/jpegimage/jpeg$",
         r"^image/vnd\.wap\.wbmp$",
         r"^image/vnd.zbrush.pcx$",
         r"^image/vnd.tencent.tap$",
+        r"^image/jpeg,image/jpeg$",
         r"^text/plain,image/avif$",
         r"^image/vnd.dece.graphic$",
         r"^image/vnd.dvb.subtitle$",
@@ -1465,6 +1469,10 @@ def preprocess_crawler_data(data: dict) -> dict:
 
             insert_only_fields["host"] = host
 
+            # --- node_id ---
+
+            insert_only_fields["node_id"] = NODE_ID
+
             # --- Directory levels ---
             dir_parts = get_directory_levels(parsed.path).get("directory_levels", [])
             if len(dir_parts) < MAX_DIR_LEVELS:
@@ -2196,7 +2204,24 @@ def cleanup_elasticsearch_indexes(
     """
     es = db.es
 
-    # Precompile regexes for blocklist rules
+    # --- Early exit optimization ---
+    if not any([
+        remove_repeated_segments,
+        remove_empty_ctype,
+        remove_blocked_hosts,
+        remove_blocked_urls,
+        remove_invalid_urls,
+    ]):
+        print("No cleanup flags enabled. Skipping Elasticsearch scan.")
+        return {
+            "repeated_segments": 0,
+            "empty_ctype": 0,
+            "blocked_hosts": 0,
+            "blocked_urls": 0,
+            "invalid_urls": 0,
+        }
+
+    # --- Precompile regexes for blocklist rules ---
     host_blocklist = [re.compile(p) for p in HOST_REGEX_BLOCK_LIST] if remove_blocked_hosts else []
     url_blocklist = [re.compile(p) for p in URL_REGEX_BLOCK_LIST] if remove_blocked_urls else []
 
@@ -2862,7 +2887,7 @@ def deduplicate_links_vs_content_es(
     db,
     links_index_pattern=f"{LINKS_INDEX}-*",
     content_index_pattern=f"{CONTENT_INDEX}-*",
-    batch_size=5000
+    batch_size=10000
 ):
     """
     Deletes all documents from `links_index_pattern` that already exist in 
@@ -2970,8 +2995,6 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     Returns:
         None
     """
-    print("Housekeeping links that are already in content...")
-    deduplicate_links_vs_content_es(db)
 
     urls_index = f"{LINKS_INDEX}-*"
     target_count = 50_000
@@ -3109,6 +3132,7 @@ async def fast_extension_crawler(url, extension_map, db, playwright):
     - Downloads and processes content if allowed.
     - Falls back to normal crawler (`get_page`) otherwise.
     """
+    global results # pylint: disable=global-statement
     print(f"[FAST CRAWLER] -{url}-")
     headers = {"User-Agent": UserAgent().random}
 
@@ -3214,6 +3238,9 @@ async def fast_extension_crawler(url, extension_map, db, playwright):
 
             if doc:
                 results["crawledcontent"].update(doc)
+                presults = preprocess_crawler_data(results)
+                db.save_batch(presults)
+                results = {"crawledcontent": {}, "crawledlinks": set()}
             break
         else:
             # Executed only if no break happened (no match found)
@@ -3689,22 +3716,25 @@ async def main():
         instance = get_instance_number()
         for iteration in range(ITERATIONS):
             if instance == 1:
-                #cleanup_elasticsearch_indexes(
-                #    db,
-                #    remove_repeated_segments=REMOVE_REPEATED_SEGMENTS,
-                #    remove_empty_ctype=REMOVE_EMPTY_CTYPE,
-                #    remove_blocked_hosts=REMOVE_BLOCKED_HOSTS,
-                #    remove_blocked_urls=REMOVE_BLOCKED_URLS,
-                #    remove_invalid_urls=REMOVE_INVALID_URLS
-                #)
+                cleanup_elasticsearch_indexes(
+                    db,
+                    remove_repeated_segments=REMOVE_REPEATED_SEGMENTS,
+                    remove_empty_ctype=REMOVE_EMPTY_CTYPE,
+                    remove_blocked_hosts=REMOVE_BLOCKED_HOSTS,
+                    remove_blocked_urls=REMOVE_BLOCKED_URLS,
+                    remove_invalid_urls=REMOVE_INVALID_URLS
+                )
                 print(f"Instance {instance}, iteration {iteration}: Checking for input URL files...")
                 await process_input_url_files(db)
                 print(f"Instance {instance}, iteration {iteration}: Let's go full crawler mode.")
                 await crawler(db)
             elif instance == 2:
-                print(f"Instance {instance}, iteration {iteration}: Running fast extension pass only.")
+                print(f"Instance {instance}, iteration {iteration}: Running housekeeping, deduplication of links from indexes.")
+                deduplicate_links_vs_content_es(db)
+                print(f"Instance {instance}, iteration {iteration}: Running fast extension pass.")
                 await run_fast_extension_pass(db)
-                #await crawler(db)
+                print(f"Instance {instance}, iteration {iteration}: Running crawler.")
+                await crawler(db)
             else:
                 print(f"Instance {instance}, iteration {iteration}: Running full crawler.")
                 await crawler(db)
