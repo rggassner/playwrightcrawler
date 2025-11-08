@@ -9,3 +9,4 @@ httpx
 elasticsearch==8.17.2
 httpx[http2]
 aiofiles
+psutil
