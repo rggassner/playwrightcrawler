@@ -3,6 +3,8 @@ Playwright crawler
 
 ## Install
 
+Before installing, consider increasing your tmpfs to 8GB.
+
 ```
 python3 -m venv venv
 source venv/bin/activate
