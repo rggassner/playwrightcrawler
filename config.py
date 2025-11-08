@@ -243,6 +243,9 @@ CHECK_INTERVAL = 1.0
 # You should keep it False so the crawler won't rescan those problem scenarios
 REMOVE_EMPTY_CTYPE = False
 
+#In a multinode environment you might want to know who collected what
+NODE_ID="collector01"
+
 
 DEBUG_PW = False
 DEBUG_HTTPX = False
