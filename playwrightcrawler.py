@@ -2913,10 +2913,9 @@ def deduplicate_links_vs_content_es(
         content_count = es.count(index=content_index_pattern)["count"]
         max_docs = int(content_count * 1.2)  # +20% buffer
         print(f"[INFO] Content index has {content_count:,} docs → max_docs={max_docs:,}")
-    except Exception as e:
+    except Exception as e: #pylint: disable=broad-exception-caught
         print(f"[WARN] Could not determine content index size: {e}")
         max_docs = 10_000_000  # fallback
-
     deleted_total = 0
     processed = 0
     search_after = None
@@ -2938,7 +2937,7 @@ def deduplicate_links_vs_content_es(
 
         try:
             resp = es.search(index=content_index_pattern, body=query)
-        except Exception as e:
+        except Exception as e: #pylint: disable=broad-exception-caught
             print(f"[deduplicate_links_vs_content_es] Elasticsearch search error: {e}")
             break
 
@@ -2961,7 +2960,7 @@ def deduplicate_links_vs_content_es(
                 wait_for_completion=True
             )
             deleted_total += response.get("deleted", 0)
-        except Exception as e:
+        except Exception as e: #pylint: disable=broad-exception-caught
             print(f"[deduplicate_links_vs_content_es] Delete query failed: {e}")
 
         processed += len(ids)
@@ -2975,30 +2974,61 @@ def deduplicate_links_vs_content_es(
     print(f"Deduplication complete. Total deleted: {deleted_total:,} docs.")
     return deleted_total
 
-# pylint: disable=too-many-statements,too-many-branches
+# pylint: disable=too-many-statements,too-many-branches,too-many-locals
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     """
-    Perform a fast crawling pass on URLs with specific file extensions.
+    Perform a fast, targeted crawling pass for URLs ending in specific file extensions.
 
-    New optimized version:
-    - Deduplicates links vs content.
-    - Picks a random timestamp pivot in Elasticsearch.
-    - Uses search_after to collect up to 10,000 candidate URLs.
-    - Filters URLs by extensions defined in EXTENSION_MAP (Python side).
-    - Collapses to one random URL per host.
-    - Runs concurrent async crawling using Playwright.
+    This function is designed for high-speed, low-footprint crawling focused on
+    non-HTML resources (e.g., PDFs, images, binaries, etc.). It operates by
+    selecting a random time pivot within the Elasticsearch index to ensure diverse
+    coverage, then progressively collects and filters candidate URLs using a series
+    of efficient heuristics.
+
+    Workflow:
+        1. **Timestamp sampling** — Determines the earliest and latest timestamps
+           in the index and picks a random pivot between them to introduce
+           temporal randomness in the crawl.
+        2. **Candidate gathering** — Uses Elasticsearch `search_after` pagination
+           to efficiently fetch batches of URLs created after the pivot, up to
+           `target_count`.
+        3. **Extension filtering** — Keeps only URLs whose file extensions match
+           entries defined in `EXTENSION_MAP`.
+        4. **Host collapsing** — Collapses multiple URLs from the same host into
+           one randomly chosen representative to maximize domain spread.
+        5. **Asynchronous crawling** — Uses Playwright and asyncio semaphores to
+           concurrently process URLs with controlled parallelism.
+        6. **Result aggregation** — Normalizes crawler results using
+           `preprocess_crawler_data()` and merges them into the global `results`
+           structure, which is persisted via `db.save_batch()`.
+
+    Performance notes:
+        - Uses `search_after` for scalable pagination (avoiding deep pagination penalties).
+        - Random pivoting prevents reprocessing the same time window repeatedly.
+        - Global `results` is *not* reinitialized, ensuring cumulative data across runs.
+        - One random URL per host ensures broad coverage and reduces fingerprinting.
 
     Args:
-        db: Database wrapper that provides Elasticsearch access and a save_batch() method.
-        max_workers (int, optional): Maximum number of concurrent async tasks.
+        db: Database wrapper that provides:
+            - `es`: Elasticsearch client instance.
+            - `save_batch(data: list)`: Persists batched crawl results.
+        max_workers (int, optional): Maximum number of concurrent Playwright
+            crawling tasks. Defaults to `MAX_FAST_WORKERS`.
 
     Returns:
         None
-    """
+            The function updates the global `results` structure and persists
+            it through `db.save_batch()`. All progress and summary information
+            are logged to stdout.
 
+    Raises:
+        ElasticsearchException: If there is a failure during search or pagination.
+        Exception: Any uncaught exceptions during asynchronous crawling tasks
+                   are caught, logged, and skipped.
+    """
     urls_index = f"{LINKS_INDEX}-*"
     target_count = 50_000
-    batch_size = 500
+    batch_size = 1_000
 
     # --- Determine time range ---
     ts_query = {
@@ -3085,7 +3115,6 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     # --- Async crawling ---
     async with async_playwright() as playwright:
         semaphore = asyncio.Semaphore(max_workers)
-        results = {"crawledcontent": {}, "crawledlinks": set()}
 
         async def sem_task(url):
             async with semaphore:
