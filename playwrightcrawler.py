@@ -2486,6 +2486,26 @@ def is_host_allow_listed(url):
     return False
 
 def is_host_block_listed(url):
+    """
+    Check whether a given URL's host matches any pattern in the host blocklist.
+
+    This function iterates over all regular expressions defined in
+    `HOST_REGEX_BLOCK_LIST` and tests them against the provided URL.  
+    If any regex matches, the host is considered blocked.
+
+    Args:
+        url (str): The full URL or hostname to check.
+
+    Returns:
+        bool: 
+            - True if the URL matches any pattern in `HOST_REGEX_BLOCK_LIST`.
+            - False otherwise.
+
+    Notes:
+        - Matching is case-insensitive and Unicode-aware (`re.I | re.U`).
+        - Intended for use in cleanup or filtering phases to skip
+          undesired or known problematic hosts.
+    """    
     for regex in HOST_REGEX_BLOCK_LIST:
         if re.search(regex, url, flags=re.I | re.U):
             return True
@@ -2883,6 +2903,7 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
         print(f"Unhandled error in get_random_unvisited_domains: {e}")
         return []
 
+# pylint: disable=too-many-locals
 def deduplicate_links_vs_content_es(
     db,
     links_index_pattern=f"{LINKS_INDEX}-*",
