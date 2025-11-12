@@ -973,6 +973,34 @@ EXTENSION_MAP = {
 
 
 def db_create_monthly_indexes(db=None):
+    """
+    Initialize or retrieve the current month's Elasticsearch index names.
+
+    This function ensures that the monthly index naming convention is
+    properly resolved for both the URL and content indexes. It uses the
+    helper `get_index_name()` to construct the full index names based
+    on the current date, typically following a pattern like:
+    `urls-2025-11` and `content-2025-11`.
+
+    Args:
+        db: Database wrapper that provides access to an Elasticsearch client
+            via `db.es`. If `None` or missing a valid client, a ValueError
+            is raised.
+
+    Returns:
+        bool: 
+            Always returns True once index names are successfully generated.
+
+    Raises:
+        ValueError: If `db` is None or does not contain a valid `es` client.
+
+    Notes:
+        - This function was previously designed to return both index names
+          (`urls_index`, `content_index`) but now performs only validation
+          and index name generation.
+        - The actual index creation may occur elsewhere in the initialization
+          pipeline.
+    """        
     if db is None or db.es is None:  # <- changed from db.con
         raise ValueError("db connection is required")
     urls_index = get_index_name(LINKS_INDEX)
