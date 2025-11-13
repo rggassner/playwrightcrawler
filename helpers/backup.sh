@@ -3,6 +3,22 @@ set -euo pipefail
 
 CONFIG="../config.py"
 
+# --- Parse optional argument ---
+OUTPUT_DIR=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --output-dir)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [--output-dir /path/to/backups]"
+      exit 1
+      ;;
+  esac
+done
+
 # Extract Elasticsearch connection details
 HOST=$(grep 'ELASTICSEARCH_HOST' "$CONFIG" | cut -d"'" -f2)
 PORT=$(grep 'ELASTICSEARCH_PORT' "$CONFIG" | grep -o '[0-9]\+')
@@ -13,11 +29,18 @@ PASSWORD=$(grep 'ELASTICSEARCH_PASSWORD' "$CONFIG" | cut -d"'" -f2)
 CONTENT_INDEX=$(grep 'CONTENT_INDEX' "$CONFIG" | cut -d"'" -f2)
 LINKS_INDEX=$(grep 'LINKS_INDEX' "$CONFIG" | cut -d"'" -f2)
 
-# Create backup directory with date stamp
-BACKUP_DIR="es_backups_$(date +%Y%m%d_%H%M%S)"
+# --- Determine backup directory ---
+if [[ -n "$OUTPUT_DIR" ]]; then
+  BACKUP_DIR="${OUTPUT_DIR%/}/es_backups_$(date +%Y%m%d_%H%M%S)"
+else
+  BACKUP_DIR="es_backups_$(date +%Y%m%d_%H%M%S)"
+fi
 mkdir -p "$BACKUP_DIR"
 
-# Function to export and compress an index
+echo "Backup output directory: $BACKUP_DIR"
+echo
+
+# --- Function to export and compress an index ---
 backup_index() {
   local INDEX=$1
   local BASE_PATH="$BACKUP_DIR/$INDEX"
@@ -25,7 +48,7 @@ backup_index() {
   local DATA_FILE="${BASE_PATH}.data.json"
 
   echo "Backing up index: $INDEX"
-  
+
   # Dump mapping
   NODE_TLS_REJECT_UNAUTHORIZED=0 elasticdump \
     --input="https://$USER:$PASSWORD@$HOST:$PORT/$INDEX" \
@@ -54,13 +77,13 @@ backup_index() {
   echo
 }
 
-# Function to list all matching indexes for a pattern
+# --- Function to list all matching indexes for a pattern ---
 list_indexes() {
   local PATTERN=$1
   curl -s -k -u "$USER:$PASSWORD" "https://$HOST:$PORT/_cat/indices/${PATTERN}-*?h=index" | awk '{print $1}'
 }
 
-# Backup all matching indexes for both base names
+# --- Backup all matching indexes for both base names ---
 for BASE_INDEX in "$CONTENT_INDEX" "$LINKS_INDEX"; do
   echo "Scanning for indexes matching: ${BASE_INDEX}-*"
   for INDEX in $(list_indexes "$BASE_INDEX"); do
