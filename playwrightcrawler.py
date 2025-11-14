@@ -2508,6 +2508,27 @@ def is_url_block_listed(url):
     return False
 
 def is_host_allow_listed(url):
+    """
+    Check whether a given URL's host matches any pattern in the host allow-list.
+
+    This function tests the provided URL against each regular expression defined
+    in `HOST_REGEX_ALLOW_LIST`. If any regex matches, the host is considered
+    explicitly allowed and should bypass normal blocking rules.
+
+    Args:
+        url (str): The full URL or hostname to evaluate.
+
+    Returns:
+        bool:
+            - True if the URL matches at least one pattern in
+              `HOST_REGEX_ALLOW_LIST`.
+            - False otherwise.
+
+    Notes:
+        - Matching is case-insensitive and Unicode-aware (`re.I | re.U`).
+        - Use this to define exceptions to block-list filters or to give
+          priority crawling access to certain trusted domains.
+    """    
     for regex in HOST_REGEX_ALLOW_LIST:
         if re.search(regex, url, flags=re.I | re.U):
             return True
