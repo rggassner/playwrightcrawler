@@ -2502,6 +2502,28 @@ def get_directory_tree(url):
         return []
 
 def is_url_block_listed(url):
+    """
+    Check whether a given URL matches any pattern in the URL blocklist.
+
+    This function iterates over all regular expressions defined in
+    `URL_REGEX_BLOCK_LIST` and tests them directly against the full URL
+    (including its path). If any regex matches, the URL is considered blocked.
+
+    Args:
+        url (str): The full URL string to evaluate.
+
+    Returns:
+        bool:
+            - True if the URL matches at least one pattern in
+              `URL_REGEX_BLOCK_LIST`.
+            - False otherwise.
+
+    Notes:
+        - Matching is case-insensitive and Unicode-aware (`re.I | re.U`).
+        - Intended for filtering out undesired or dangerous paths such as
+          admin URLs, tracking URLs, infinite loops, or known problematic
+          structures.
+    """    
     for regex in URL_REGEX_BLOCK_LIST:
         if re.search(regex, url, flags=re.I | re.U):
             return True
