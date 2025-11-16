@@ -2490,16 +2490,55 @@ async def content_type_images(args):
             }
 
 def get_directory_tree(url):
+    """
+    Generate a list of parent directory URLs derived from the path of a given URL.
+
+    This function progressively removes trailing path segments from the input URL
+    and returns each resulting directory level. It is useful for crawlers that need
+    to attempt fallback discovery by walking upward through a site's directory
+    structure.
+
+    Example:
+        Input:
+            https://example.com/a/b/c/file.txt
+
+        Output:
+            [
+                "https://example.com/a/b/c",
+                "https://example.com/a/b",
+                "https://example.com/a"
+            ]
+
+    Parameters:
+        url (str):
+            The full URL whose directory hierarchy will be computed.
+
+    Returns:
+        list[str]:
+            A list of directory URLs, ordered from deepest to shallowest.
+            Returns an empty list if the URL is invalid or cannot be parsed.
+
+    Notes:
+        - Query parameters and fragments are ignored.
+        - The host portion (scheme + domain) is preserved at every level.
+        - Intended for use in hierarchical crawling, S3-style path exploration,
+          or building breadcrumb-like fallback checks.
+    """    
     try:
-        host = '://'.join(urlsplit(url)[:2])
+        host = "://".join(urlsplit(url)[:2])
         dtree = []
         parts = PurePosixPath(unquote(urlparse(url).path)).parts
-        for iter in range(1, len(parts[0:])):
-            dtree.append(str(host + '/' + '/'.join(parts[1:-iter])))
+
+        # Avoid redefining 'iter' (built-in)
+        for idx in range(1, len(parts[0:])):
+            dtree.append(str(host + '/' + '/'.join(parts[1:-idx])))
+
         return dtree
-    except Exception as e:
-        #print(f"[WARN] Skipping invalid URL in get_directory_tree(): {url} — {e}")
+
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        print(f"[WARN] Skipping invalid URL in get_directory_tree(): {url} — {e}")
         return []
+
 
 def is_url_block_listed(url):
     """
