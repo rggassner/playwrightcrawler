@@ -590,6 +590,7 @@ content_type_compressed_regex = [
         r"^application/x-zip$",
         r"^application/x-rar$",
         r"^application/x-tar$",
+        r"^application/x-gtar$",
         r"^application/x-lzma$",
         r"^application/x-gzip$",
         r"^application/x-bzip2$",
@@ -2393,7 +2394,78 @@ def get_min_webcontent(soup) -> str:
 
 @function_for_content_type(content_type_image_regex)
 async def content_type_images(args):
-    global model
+    """
+    Process an image response detected by content-type regex and optionally
+    download, classify, and store metadata about the image.
+
+    This function supports two major modes:
+      - DOWNLOAD_ALL_IMAGES: Save every image encountered.
+      - CATEGORIZE_NSFW: Run NSFW/SFW classification on the image
+        and optionally save according to category.
+
+    The function extracts image metadata, computes resolution, converts
+    formats when necessary (e.g., CMYK → RGB, palette-based images with
+    transparency → RGBA), hashes the image content to generate a stable
+    filename, and optionally runs NSFW classification using the loaded model.
+
+    Parameters:
+        args (dict):
+            A dictionary containing information about the fetched resource.
+            Expected keys include:
+                - 'url':           The URL of the downloaded image.
+                - 'raw_content':   Raw binary image data.
+                - 'content_type':  The detected MIME type (e.g., image/png).
+                - 'parent_host':   Hostname of the parent page.
+
+    Returns:
+        dict:
+            A dictionary keyed by the original URL, containing metadata
+            describing the processed image. Depending on flow, fields may
+            include:
+
+            Common fields:
+                {
+                    "url": <str>,
+                    "content_type": <str>,
+                    "source": <str>,
+                    "isopendir": False,
+                    "visited": True,
+                    "parent_host": <str>,
+                }
+
+            When successfully processed:
+                - "filename":    The generated SHA-512 filename for the image.
+                - "resolution":  Total pixel count (width * height).
+                - "isnsfw":      Float probability (only when NSFW analysis runs).
+
+            Error handlers set the `source` field accordingly:
+                - "content_type_images_unidentified_image_error"
+                - "content_type_images_decompression_bomb_error"
+                - "content_type_images_oserror"
+
+            When no image download or classification happens:
+                - "source": "content_type_images_no_download"
+
+    Behavior Summary:
+        - Parses and loads the image using Pillow.
+        - Normalizes image mode if required (RGB/RGBA).
+        - Computes resolution and generates canonical filename via SHA-512 hash.
+        - If DOWNLOAD_ALL_IMAGES is enabled:
+            Saves the processed image to the configured folder.
+        - If CATEGORIZE_NSFW is enabled:
+            - Ensures the image meets MIN_NSFW_RES threshold.
+            - Feeds image through the NSFW model.
+            - Saves into SFW or NSFW folder depending on classification.
+            - Adds `isnsfw` probability to output.
+        - Always returns a metadata dictionary describing the outcome.
+
+    Notes:
+        - Images failing to decode or triggering Pillow safety limits
+          are caught gracefully and logged.
+        - CMYK and palette-based images are converted for consistent handling.
+        - Raw content is never written directly; only normalized PNG output
+          is saved.
+    """    
     npixels = 0
     if CATEGORIZE_NSFW or DOWNLOAD_ALL_IMAGES:
         try:
@@ -2416,7 +2488,7 @@ async def content_type_images(args):
                 predictions = model.predict(inputs, verbose=0)
                 _, nsfw_probability = predictions[0]
                 if nsfw_probability > NSFW_MIN_PROBABILITY:
-                    print('porn {} {}'.format(nsfw_probability, args['url']))
+                    print(f"porn {nsfw_probability} {args['url']}")
                     if DOWNLOAD_NSFW:
                         img.save(NSFW_FOLDER + '/' + filename, "PNG")
                 else:
@@ -2434,19 +2506,19 @@ async def content_type_images(args):
                             "filename":filename,
                             "resolution":npixels }
                         }
-            else:
-                return  { args['url']:
-                        {   
-                            "url":args['url'],
-                            "content_type":args['content_type'],
-                            "source":"content_type_images_download",
-                            "isopendir":False,
-                            "visited":True,
-                            "parent_host":args['parent_host'],
-                            "filename":filename,
-                            "resolution":npixels }
-                        }
+            return  { args['url']:
+                    {   
+                        "url":args['url'],
+                        "content_type":args['content_type'],
+                        "source":"content_type_images_download",
+                        "isopendir":False,
+                        "visited":True,
+                        "parent_host":args['parent_host'],
+                        "filename":filename,
+                        "resolution":npixels }
+                    }
         except UnidentifiedImageError as e:
+            print(f"[WARN] UnidentifiedImageError: {args['url']} — {e}")
             return {args['url']:
                     {
                     "url":args['url'],
@@ -2458,6 +2530,7 @@ async def content_type_images(args):
                     }
                     }
         except Image.DecompressionBombError as e:
+            print(f"[WARN] Image.DecompressionBombError: {args['url']} — {e}")
             return {args['url']:
                     {
                     "url":args['url'],
