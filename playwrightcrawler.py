@@ -2379,6 +2379,30 @@ def cleanup_elasticsearch_indexes(
 
 
 def get_min_webcontent(soup) -> str:
+    """
+    Extract a minimal, cleaned text representation from a BeautifulSoup document.
+
+    This function collects all textual nodes from the parsed HTML while excluding
+    any tags listed in `soup_tag_blocklist`. It removes extra whitespace, filters
+    out empty fragments, and returns a compact string suitable for indexing,
+    deduplication, or lightweight content comparison.
+
+    Parameters:
+        soup (bs4.BeautifulSoup):
+            A BeautifulSoup-parsed HTML document from which text will be extracted.
+
+    Returns:
+        str:
+            A single string containing the concatenated cleaned text extracted
+            from allowed HTML nodes. All consecutive whitespace is normalized to
+            single spaces, and content from blocklisted tags is omitted.
+
+    Notes:
+        - `soup_tag_blocklist` must be defined in the surrounding scope.
+        - Whitespace, newlines, and empty text nodes are removed.
+        - Useful for quick similarity checks or storing minimal textual content
+          without full HTML noise.
+    """    
     text_parts = [
         t.strip()  # remove leading/trailing whitespace including \n
         for t in soup.find_all(string=True)
