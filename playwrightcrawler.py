@@ -2204,7 +2204,8 @@ async def process_input_url_files(db):
             print(f"File fully processed and removed: {file_to_process}")
 
 
-def cleanup_elasticsearch_indexes(
+# pylint: disable=too-many-locals,too-many-statements,too-many-positional-arguments,too-many-arguments
+def cleanup_elasticsearch_indexes( 
     db,
     remove_repeated_segments=False,
     remove_empty_ctype=False,
@@ -2212,7 +2213,7 @@ def cleanup_elasticsearch_indexes(
     remove_blocked_urls=False,
     remove_invalid_urls=False,
     batch_size=2000
-):
+    ):
     """
     Unified cleanup for Elasticsearch indexes.
 
@@ -2260,7 +2261,7 @@ def cleanup_elasticsearch_indexes(
     def is_blocked_path(path):
         return any(r.search(path) for r in url_blocklist)
 
-    results = {
+    cleanup_stats = {
         "repeated_segments": 0,
         "empty_ctype": 0,
         "blocked_hosts": 0,
@@ -2268,8 +2269,9 @@ def cleanup_elasticsearch_indexes(
         "invalid_urls": 0,
     }
 
+    # pylint: disable=too-many-branches,too-many-locals
     def process_index(index_pattern: str, label: str):
-        nonlocal results
+        nonlocal cleanup_stats
         deleted = 0
         processed = 0
         search_after = None
@@ -2292,7 +2294,7 @@ def cleanup_elasticsearch_indexes(
 
             try:
                 res = es.search(index=index_pattern, body=base_query)
-            except Exception as e:
+            except Exception as e: # pylint: disable=broad-exception-caught
                 print(f"[{label}] Search error: {e}")
                 break
 
@@ -2314,22 +2316,22 @@ def cleanup_elasticsearch_indexes(
 
                 # --- Apply cleanup rules ---
                 if remove_repeated_segments and has_repeated_segments(url):
-                    results["repeated_segments"] += 1
+                    cleanup_stats["repeated_segments"] += 1
                     ids_to_delete.append(doc["_id"])
                     continue
 
                 if remove_empty_ctype and (not ctype or ctype == "") and not visited:
-                    results["empty_ctype"] += 1
+                    cleanup_stats["empty_ctype"] += 1
                     ids_to_delete.append(doc["_id"])
                     continue
 
                 if remove_blocked_hosts and is_blocked_host(host):
-                    results["blocked_hosts"] += 1
+                    cleanup_stats["blocked_hosts"] += 1
                     ids_to_delete.append(doc["_id"])
                     continue
 
                 if remove_blocked_urls and is_blocked_path(path):
-                    results["blocked_urls"] += 1
+                    cleanup_stats["blocked_urls"] += 1
                     ids_to_delete.append(doc["_id"])
                     continue
 
@@ -2337,7 +2339,7 @@ def cleanup_elasticsearch_indexes(
                     parsed = urlparse(url)
                     sanitized = sanitize_url(url)
                     if parsed.scheme == "" or sanitized != url:
-                        results["invalid_urls"] += 1
+                        cleanup_stats["invalid_urls"] += 1
                         ids_to_delete.append(doc["_id"])
                         continue
 
@@ -2353,7 +2355,7 @@ def cleanup_elasticsearch_indexes(
                         wait_for_completion=True
                     )
                     deleted += resp.get("deleted", 0)
-                except Exception as e:
+                except Exception as e: # pylint: disable=broad-exception-caught
                     print(f"[{label}] Delete error: {e}")
 
             processed += len(hits)
@@ -2371,11 +2373,11 @@ def cleanup_elasticsearch_indexes(
     process_index(f"{CONTENT_INDEX}-*", CONTENT_INDEX)
 
     print("\n Cleanup summary:")
-    for k, v in results.items():
+    for k, v in cleanup_stats.items():
         print(f"  {k}: {v}")
 
-    print(f" Total deleted across all rules: {sum(results.values()):,}")
-    return results
+    print(f" Total deleted across all rules: {sum(cleanup_stats.values()):,}")
+    return cleanup_stats
 
 
 def get_min_webcontent(soup) -> str:
