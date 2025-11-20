@@ -71,9 +71,10 @@ content_type_octetstream = [
         r"^application/force-download$",
         r"^application/x-www-form-urlencoded$",
         r"^application/octet-stream,text/html$",
+        r"^application/octet-streamtext/plain$",
+        r"^application/octet-stream,text/plain$",
         r"^application/octet-stream,atext/plain$",
         r"^application/octet-streamCharset=UTF-8$",
-        r"^application/octet-stream,text/plain$",
         r"^application/vnd\.google\.octet-stream-compressible$",
     ]
 
@@ -2145,6 +2146,47 @@ async def content_type_download(args):
 
 
 async def process_input_url_files(db):
+    """
+    Process queued URL files from the input directory and crawl their contents.
+
+    This function continuously checks the configured input folder (`INPUT_FOLDER`)
+    for text files containing URLs. For each available file, a random one is
+    selected, safely read (handling Unicode errors when necessary), and up to
+    `MAX_URLS_FROM_FILE` URLs are extracted and crawled using Playwright.
+
+    After crawling:
+      - The file is rewritten with any remaining unprocessed lines, or
+      - Removed entirely if fully processed or empty.
+
+    This mechanism allows an external process (or manual workflow) to feed URLs
+    into the crawler in batches without blocking the main crawling loop.
+
+    Parameters:
+        db:
+            A database or Elasticsearch client instance, passed to `get_page()`
+            and used during page-processing operations.
+
+    Workflow:
+        1. Validate that the input folder exists; otherwise, exit immediately.
+        2. Loop until no files remain in the folder.
+        3. Select a random file to distribute load across file sources.
+        4. Attempt UTF-8 decoding; if decoding fails, fall back to a safe
+           line-by-line binary read with replacement of invalid characters.
+        5. Process the first `MAX_URLS_FROM_FILE` URLs using Playwright.
+        6. Rewrite the file with leftover URLs or delete it if fully consumed.
+
+    Notes:
+        - Invalid URLs or crawling errors are caught and logged without stopping
+          the processing loop.
+        - Empty files are automatically deleted to avoid reprocessing.
+        - The function is asynchronous because Playwright operations require
+          `async` context management (`async with async_playwright()`).
+
+    Returns:
+        None
+            The function operates for its side effects: crawling URLs and
+            updating or deleting input files.
+    """    
     if not os.path.isdir(INPUT_FOLDER):
         return
 
@@ -2171,8 +2213,8 @@ async def process_input_url_files(db):
                 for i, raw_line in enumerate(f, 1):
                     try:
                         line = raw_line.decode("utf-8")
-                    except UnicodeDecodeError as e:
-                        print(f"Problem in line {i}: {e} -> replacing bad chars")
+                    except UnicodeDecodeError as ie:
+                        print(f"Problem in line {i}: {ie} -> replacing bad chars")
                         line = raw_line.decode("utf-8", errors="replace")
                     lines.append(line)
 
@@ -2189,10 +2231,10 @@ async def process_input_url_files(db):
             if not url:
                 continue
             try:
-                print('    [FILE] {}'.format(url))
+                print(f"    [FILE] {url}")
                 async with async_playwright() as playwright:
                     await get_page(url, playwright, db)
-            except Exception as e:
+            except Exception as e: # pylint: disable=broad-exception-caught
                 print(f"Error crawling {url}: {e}")
 
         # Rewrite file with remaining lines
