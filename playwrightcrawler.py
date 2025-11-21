@@ -2103,10 +2103,50 @@ def is_octetstream(content_type: str) -> bool:
 
 @function_for_content_type(content_type_html_regex)
 async def content_type_download(args):
+    """
+    Process HTML content for a downloaded URL and extract structured web content.
+
+    This function is automatically registered for handling responses whose
+    content type matches ``content_type_html_regex``. It receives the parsed
+    arguments for a URL (including its HTML content) and attempts to parse
+    the HTML with BeautifulSoup. On success, it extracts optional metadata such as:
+
+    - ``words``: Text tokens extracted from the HTML body  
+    - ``raw_webcontent``: A truncated raw HTML string  
+    - ``min_webcontent``: A minimal cleaned summary extracted from the page  
+    - ``isopendir`` and ``opendir_pattern``: Whether the content resembles an open directory listing
+
+    If HTML parsing fails, the function returns a fallback structure marking the
+    URL as visited while storing minimal metadata.  
+    Extraction of fields depends on global flags:
+    ``EXTRACT_WORDS``, ``EXTRACT_RAW_WEBCONTENT``, and ``EXTRACT_MIN_WEBCONTENT``.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing:
+        - ``url``: The URL being processed  
+        - ``content``: The raw HTML string  
+        - ``content_type``: The detected content type  
+        - ``parent_host``: Host from which the URL was discovered  
+
+    Returns
+    -------
+    dict
+        A dictionary with the URL as the key and a metadata dictionary as the value.
+        Includes parsing results, extracted content, open directory detection flags,
+        and visit status.
+
+    Notes
+    -----
+    - The returned structure is designed to be directly saved into Elasticsearch.
+    - HTML output is truncated to ``MAX_WEBCONTENT_SIZE`` to reduce index size.
+    - Errors are caught broadly to ensure crawler stability.
+    """    
     try:
         content = args['content']
         soup = BeautifulSoup(content, "html.parser")
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-exception-caught
         print(f"Soup parsing error for {args['url']}: {e}")
         return { args['url'] :
                 {
