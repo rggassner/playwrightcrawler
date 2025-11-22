@@ -2095,8 +2095,33 @@ async def content_type_midis(args):
 
 
 def is_octetstream(content_type: str) -> bool:
-    for pattern in content_type_octetstream:
-        if re.match(pattern, content_type, re.IGNORECASE):
+    """
+    Check whether a content type matches any known octet-stream patterns.
+
+    This function iterates through the global ``content_type_octetstream`` list,
+    comparing each regular expression against the provided ``content_type``.
+    If any pattern matches (case-insensitive), the function considers the
+    content type to represent a generic binary/octet-stream resource.
+
+    Parameters
+    ----------
+    content_type : str
+        The MIME content type string to evaluate.
+
+    Returns
+    -------
+    bool
+        ``True`` if the content type matches any octet-stream regex pattern,
+        ``False`` otherwise.
+
+    Notes
+    -----
+    Octet-stream content types often represent arbitrary binary data and
+    typically indicate that the crawler should treat the resource as a file
+    rather than HTML or other structured formats.
+    """    
+    for octet_pattern in content_type_octetstream:
+        if re.match(octet_pattern, content_type, re.IGNORECASE):
             return True
     return False
 
