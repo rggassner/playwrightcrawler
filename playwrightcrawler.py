@@ -2084,6 +2084,46 @@ async def content_type_compresseds(args):
 
 @function_for_content_type(content_type_midi_regex)
 async def content_type_midis(args):
+    """
+    Process and store resources identified as MIDI files based on their content type.
+
+    This function is registered dynamically via the ``@function_for_content_type``
+    decorator, which activates it whenever a URL's MIME type matches one of the
+    patterns in ``content_type_midi_regex``. It delegates the actual processing
+    to ``handle_content_type``, which performs downloading, validation, and
+    metadata extraction.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing metadata and crawler context for the URL being
+        processed. Expected keys include:
+        - ``url``: The target URL.
+        - ``content``: Raw response bytes or text.
+        - ``content_type``: The detected MIME type.
+        - ``parent_host``: Hostname that linked to this URL.
+        - Any other fields required by ``handle_content_type``.
+
+    Returns
+    -------
+    dict
+        A mapping containing processed output for this URL, in the standardized
+        format used across the crawler. The dictionary's key is the URL itself,
+        and the value contains metadata such as:
+        - ``url``: Original URL
+        - ``visited``: ``True`` once processed
+        - ``source``: Processing source label (``"midi"``)
+        - ``parent_host``: The referring host
+        - Any fields added by ``handle_content_type`` (e.g., file paths)
+
+    Notes
+    -----
+    - Files are stored under ``MIDIS_FOLDER``.
+    - Processing and downloading behavior depends on the global ``DOWNLOAD_MIDIS``
+      flag.
+    - This function exists primarily as a thin wrapper to keep MIME-specific
+      logic clean, isolated, and consistent across all content handlers.
+    """    
     return await handle_content_type(
         args,
         DOWNLOAD_MIDIS,
