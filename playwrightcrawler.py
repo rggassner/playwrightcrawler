@@ -2072,6 +2072,45 @@ async def content_type_comics(args):
 
 @function_for_content_type(content_type_compressed_regex)
 async def content_type_compresseds(args):
+    """
+    Process and store resources identified as compressed or archive files.
+
+    This function is automatically registered through the
+    ``@function_for_content_type`` decorator, making it the handler for any URL
+    whose MIME type matches one of the patterns in ``content_type_compressed_regex``.
+    It delegates all processing steps to ``handle_content_type``, which manages
+    downloading, validation, folder placement, and metadata assembly.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary carrying crawler context and response information for the
+        URL being processed. Expected keys include:
+        - ``url``: The resource URL.
+        - ``content``: Raw HTTP response content.
+        - ``content_type``: The detected MIME type for the resource.
+        - ``parent_host``: Hostname that referred to this URL.
+        - Any other metadata required by ``handle_content_type``.
+
+    Returns
+    -------
+    dict
+        A standardized result dictionary where the key is the processed URL and
+        the value contains fields such as:
+        - ``url``: The original URL
+        - ``visited``: ``True`` to indicate successful handling
+        - ``source``: Identifier for this handler (``"compressed"``)
+        - ``parent_host``: The referrer host
+        - Additional fields filled by ``handle_content_type`` (e.g., file paths)
+
+    Notes
+    -----
+    - Output files are stored inside ``COMPRESSEDS_FOLDER``.
+    - Processing logic is controlled by the ``DOWNLOAD_COMPRESSEDS`` configuration
+      flag.
+    - This function is a thin wrapper to maintain clean MIME-type-specific
+      organization for all crawler content handlers.
+    """    
     return await handle_content_type(
         args,
         DOWNLOAD_COMPRESSEDS,
