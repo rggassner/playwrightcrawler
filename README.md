@@ -113,4 +113,4 @@ This section lists **practical uses** for the crawler project. Each entry explai
 
 # References and sources
 
-** https://tranco-list.eu/ **
+* ** https://tranco-list.eu/ **
