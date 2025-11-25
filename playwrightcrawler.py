@@ -2060,6 +2060,46 @@ async def content_type_torrents(args):
 
 @function_for_content_type(content_type_comic_regex)
 async def content_type_comics(args):
+    """
+    Handle resources identified as comic or manga files based on MIME type.
+
+    This function is registered through the ``@function_for_content_type``
+    decorator, making it the designated handler for any URL whose detected
+    content type matches one of the patterns in ``content_type_comic_regex``.
+    The function itself simply forwards all processing responsibilities to
+    ``handle_content_type``, which manages downloading, validation, folder
+    placement, and metadata assembly.
+
+    Parameters
+    ----------
+    args : dict
+        Dictionary containing crawler context and metadata for the resource
+        being processed. Expected fields include:
+        - ``url``: The target URL.
+        - ``content``: Raw HTTP response content.
+        - ``content_type``: Detected MIME type.
+        - ``parent_host``: Host that referred to this URL.
+        - Any additional values required by ``handle_content_type``.
+
+    Returns
+    -------
+    dict
+        A normalized result dictionary keyed by URL. The associated value
+        contains metadata such as:
+        - ``url``: The processed URL
+        - ``visited``: ``True`` indicating successful handling
+        - ``source``: Identifier for this handler (``"comic"``)
+        - ``parent_host``: Referrer host
+        - Additional fields produced by ``handle_content_type`` (e.g. file path)
+
+    Notes
+    -----
+    - Output files are stored inside the folder specified by ``COMICS_FOLDER``.
+    - Processing is enabled or disabled by the ``DOWNLOAD_COMICS`` configuration
+      flag.
+    - This wrapper exists to keep MIME-type-specific handlers organized and
+      consistent across the crawler codebase.
+    """    
     return await handle_content_type(
         args,
         DOWNLOAD_COMICS,
