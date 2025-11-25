@@ -110,3 +110,7 @@ This section lists **practical uses** for the crawler project. Each entry explai
 
 * **Rate-limit** and use polite concurrency to avoid overwhelming third-party servers (this crawler supports throttling).
 * **Data retention & privacy:** When collecting personal data, ensure you comply with privacy laws and your organization’s policies.
+
+# References and sources
+
+** https://tranco-list.eu/ **
