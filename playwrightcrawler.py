@@ -2048,6 +2048,44 @@ async def content_type_databases(args):
 
 @function_for_content_type(content_type_torrent_regex)
 async def content_type_torrents(args):
+    """
+    Handle resources identified as BitTorrent files based on MIME type.
+
+    This function is automatically registered by the
+    ``@function_for_content_type`` decorator, making it the designated handler
+    for any URL whose detected MIME type matches ``content_type_torrent_regex``.
+    All download logic, validation, folder selection, and metadata formatting
+    are delegated to ``handle_content_type`` for consistency across handlers.
+
+    Parameters
+    ----------
+    args : dict
+        Dictionary containing crawler metadata for the resource being processed.
+        Expected keys include:
+        - ``url``: The target URL.
+        - ``content``: Raw HTTP response content.
+        - ``content_type``: Server-reported MIME type.
+        - ``parent_host``: Referrer host initiating the request.
+        - Additional internal fields used by ``handle_content_type``.
+
+    Returns
+    -------
+    dict
+        A normalized structure keyed by URL, containing metadata produced by
+        ``handle_content_type`` such as:
+        - ``url``: The processed URL.
+        - ``visited``: ``True``.
+        - ``source``: Identifier for this handler (``"torrent"``).
+        - ``parent_host``: The domain that linked to the file.
+        - File information if downloading is enabled.
+
+    Notes
+    -----
+    - Downloads are controlled by the ``DOWNLOAD_TORRENTS`` configuration flag.
+    - Saved files are stored under ``TORRENTS_FOLDER``.
+    - This function exists primarily as a lightweight wrapper to keep MIME-type
+      handlers uniform and maintainable.
+    """    
     return await handle_content_type(
         args,
         DOWNLOAD_TORRENTS,
