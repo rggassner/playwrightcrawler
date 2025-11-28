@@ -2036,6 +2036,45 @@ async def content_type_docs(args):
 
 @function_for_content_type(content_type_database_regex)
 async def content_type_databases(args):
+    """
+    Handle resources identified as database files based on their MIME type.
+
+    This function is automatically registered by the
+    ``@function_for_content_type`` decorator as the handler for any URL whose
+    MIME type matches ``content_type_database_regex``. The actual processing,
+    saving, and metadata generation logic is delegated to ``handle_content_type``,
+    ensuring consistency across all content-type handlers.
+
+    Parameters
+    ----------
+    args : dict
+        Dictionary with metadata about the resource being processed. Expected
+        keys include:
+        - ``url``: The target URL.
+        - ``content``: Raw HTTP response body.
+        - ``content_type``: Reported MIME type.
+        - ``parent_host``: Host from which the URL was discovered.
+        - Other crawler-internal fields used by ``handle_content_type``.
+
+    Returns
+    -------
+    dict
+        A structured dict keyed by the URL, containing standardized fields
+        returned by ``handle_content_type`` such as:
+        - ``url``: The processed URL.
+        - ``visited``: ``True``.
+        - ``source``: Identifier for this handler (``"database"``).
+        - ``parent_host``: The referring domain.
+        - File information if downloads are enabled.
+
+    Notes
+    -----
+    - Whether database files are downloaded is controlled by
+      ``DOWNLOAD_DATABASES``.
+    - Stored files are written into ``DATABASES_FOLDER``.
+    - This wrapper exists mainly to keep handler definitions clean,
+      declarative, and uniform across MIME types.
+    """    
     return await handle_content_type(
         args,
         DOWNLOAD_DATABASES,
