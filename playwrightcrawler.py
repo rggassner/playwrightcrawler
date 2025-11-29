@@ -2025,6 +2025,44 @@ async def content_type_pdfs(args):
 
 @function_for_content_type(content_type_doc_regex)
 async def content_type_docs(args):
+    """
+    Handle resources identified as document files based on their MIME type.
+
+    This function is registered by the ``@function_for_content_type`` decorator
+    and is invoked whenever a URL's MIME type matches ``content_type_doc_regex``.
+    All core logic—including file saving, metadata generation, and conditional
+    downloading—is delegated to ``handle_content_type`` to maintain a uniform
+    structure across all MIME-type handlers.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing metadata for the resource being processed.
+        Expected keys include:
+        - ``url``: The URL being handled.
+        - ``content``: Raw HTTP response body.
+        - ``content_type``: The MIME type reported by the server.
+        - ``parent_host``: The referring host from which the URL was found.
+        - Other internal fields used by ``handle_content_type``.
+
+    Returns
+    -------
+    dict
+        A standardized dictionary keyed by the URL, populated by
+        ``handle_content_type``. Fields typically include:
+        - ``url``: The processed URL.
+        - ``visited``: ``True``.
+        - ``source``: Identifier for this handler (``"doc"``).
+        - ``parent_host``: The originating host.
+        - File metadata if downloading is enabled.
+
+    Notes
+    -----
+    - Downloads are controlled by the ``DOWNLOAD_DOCS`` configuration flag.
+    - Files are stored inside the ``DOCS_FOLDER`` directory.
+    - This function serves as a lightweight wrapper to keep all content-type
+      handlers simple, declarative, and easy to maintain.
+    """    
     return await handle_content_type(
         args,
         DOWNLOAD_DOCS,
