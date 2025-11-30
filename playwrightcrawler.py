@@ -2014,6 +2014,42 @@ async def content_type_audios(args):
 
 @function_for_content_type(content_type_pdf_regex)
 async def content_type_pdfs(args):
+    """
+    Process a URL whose Content-Type matches one of the PDF MIME patterns.
+
+    This function is registered through the ``@function_for_content_type``
+    decorator so it is automatically selected when a fetched resource matches
+    any regex in ``content_type_pdf_regex``. It delegates the actual processing
+    to ``handle_content_type``, which manages downloading, storing, and
+    recording metadata for PDF files.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing all metadata and crawling context for the URL.
+        Expected keys typically include:
+        - ``url``: The resource URL.
+        - ``content_type``: The detected MIME type.
+        - ``parent_host``: The host from which this URL was discovered.
+        - ``content`` or ``response`` fields depending on pipeline stage.
+
+    Returns
+    -------
+    dict
+        A structured dictionary representing the processed PDF entry to be
+        stored in Elasticsearch. The exact structure is produced by
+        ``handle_content_type``.
+
+    Notes
+    -----
+    - ``handle_content_type`` is responsible for:
+        * Validating whether downloads are enabled via ``DOWNLOAD_PDFS``.
+        * Writing the PDF to ``PDFS_FOLDER``.
+        * Enforcing file size limits and other crawler policies.
+        * Returning a metadata dictionary describing the PDF resource.
+    - This function is asynchronous because file downloads and I/O operations
+      may be awaited within ``handle_content_type``.
+    """    
     return await handle_content_type(
         args,
         DOWNLOAD_PDFS,
