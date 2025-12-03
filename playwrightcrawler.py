@@ -1980,6 +1980,43 @@ async def handle_content_type(
 
 @function_for_content_type(content_type_font_regex)
 async def content_type_fonts(args):
+    """
+    Process a URL whose Content-Type indicates a font resource.
+
+    This function is registered via the ``@function_for_content_type`` decorator
+    and is triggered whenever the crawler encounters a URL whose MIME type
+    matches any of the patterns in ``content_type_font_regex``. The actual work
+    is delegated to ``handle_content_type``, which handles downloading and
+    organizing font files for storage or indexing.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing metadata about the resource being processed.
+        Expected keys include:
+        - ``url``: The target font URL.
+        - ``content_type``: The detected MIME type.
+        - ``parent_host``: The host where the URL was discovered.
+        Additional keys may exist depending on upstream processing.
+
+    Returns
+    -------
+    dict
+        A structured dictionary produced by ``handle_content_type`` containing
+        metadata about the processed font file, suitable for Elasticsearch or
+        downstream ingestion.
+
+    Notes
+    -----
+    - ``handle_content_type`` is responsible for:
+        * Checking whether font downloads are enabled via ``DOWNLOAD_FONTS``.
+        * Saving the file into ``FONTS_FOLDER``.
+        * Enforcing crawler size and safety rules.
+        * Producing a consistent metadata entry.
+    - This function is async because downloading and file I/O are performed
+      inside ``handle_content_type``.
+
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_FONTS,
