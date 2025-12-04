@@ -1404,11 +1404,13 @@ def get_host_levels(hostname):
         }
     }
 
+
 def is_embedded_url(url: str) -> bool:
     return url.startswith(("data:", "blob:", "about:", "javascript:"))
 
-def preprocess_crawler_data(data: dict) -> dict:
 
+# pylint: disable= too-many-locals
+def preprocess_crawler_data(data: dict) -> dict:
     crawledcontent = data.get("crawledcontent", {})
     crawledlinks = data.get("crawledlinks", set())
 
@@ -1446,7 +1448,7 @@ def preprocess_crawler_data(data: dict) -> dict:
                 if normalized_url not in crawledcontent:
                     filtered_links[normalized_url] = host 
 
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-exception-caught
             print(f"[PREPROCESS_CRAWLER_DATA NORMALIZATION] Failed to normalize {url}: {e}. This url won't be persisted.")
             continue    
 
@@ -1610,6 +1612,8 @@ def get_words_from_soup(soup) -> list[str]:
     combined_text = " ".join(text_parts)
     return extract_top_words_from_text(combined_text)
 
+
+# pylint: disable= too-many-locals
 def sanitize_url(
         url,
         skip_log_tags=['FINAL_NORMALIZE',
@@ -1740,7 +1744,7 @@ def sanitize_url(
                      parsed.query,
                      parsed.fragment))
             url = rebuilt
-    except Exception:
+    except Exception: # pylint: disable=broad-exception-caught
         fallback = re.sub(r'(https?://[^/]+)/{2,}', r'\1/', url)
         url = fallback
 
@@ -1760,7 +1764,7 @@ def sanitize_url(
         path = safe_normalize_path_slashes(parsed.path)
         normalized = urlunsplit((scheme, netloc, path, parsed.query, ''))
         return normalized.strip()
-    except Exception:
+    except Exception: # pylint: disable=broad-exception-caught
         return url.strip()
 
 
@@ -1782,7 +1786,7 @@ async def get_links_page(page, base_url: str) -> list[str]:
             """)
             # Filter only strings
             return [v for v in values if isinstance(v, str)]
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-exception-caught
             print(f"[WARN] Could not extract <{tag_name}> from {base_url}: {e}")
             return []
 
@@ -1801,7 +1805,7 @@ def get_words(text: bytes | str) -> list[str]:
     if isinstance(text, bytes):
         try:
             text = text.decode('utf-8', errors='replace')
-        except Exception:
+        except Exception: # pylint: disable=broad-exception-caught
             return []
     return extract_top_words_from_text(text)
 
@@ -1839,7 +1843,7 @@ async def get_words_from_page(page) -> list[str]:
         else:
             # Keep only strings, ignore anything else
             text_parts = [str(x) for x in text_parts if isinstance(x, str)]
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-exception-caught
         print(f"[WARN] get_words_from_page failed: {e}")
         text_parts = []
 
@@ -1860,6 +1864,43 @@ async def content_type_ignore(args):
 
 @function_for_content_type(content_type_plain_text_regex)
 async def content_type_plain_text(args):
+    """
+    Process a URL whose Content-Type indicates plain text.
+
+    This function is registered via the ``@function_for_content_type`` decorator
+    and is executed whenever the crawler encounters a resource matching
+    ``content_type_plain_text_regex`` (e.g., text/plain). It optionally extracts
+    words from the raw text content and returns a structured metadata record
+    describing the processed resource.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing metadata about the resource being processed.
+        Expected fields include:
+        - ``url``: The text file URL.
+        - ``content``: The raw text payload (bytes or string depending on upstream).
+        - ``content_type``: MIME type of the resource.
+        - ``parent_host``: Source host where the URL was discovered.
+
+    Returns
+    -------
+    dict
+        A dictionary keyed by the URL, containing:
+        - ``url``: The processed URL.
+        - ``content_type``: Detected MIME type.
+        - ``visited``: Marked as True.
+        - ``isopendir``: Always False for plain-text resources.
+        - ``words``: Extracted word list (empty string if extraction disabled).
+        - ``source``: A tag identifying this processing pathway.
+        - ``parent_host``: The URL's originating host.
+
+    Notes
+    -----
+    - Word extraction is controlled by the global ``EXTRACT_WORDS`` flag.
+    - Parsing is intentionally minimal since plain text requires no HTML parsing
+      or binary inspection.
+    """    
     words = ''
     if EXTRACT_WORDS:
         words = get_words(args['content'])
@@ -1874,7 +1915,7 @@ async def content_type_plain_text(args):
         "parent_host": args['parent_host'] }
     }
 
-
+# pylint: disable= too-many-locals, too-many-positional-arguments, too-many-arguments
 async def handle_content_type(
     args,
     download_flag,
@@ -1923,7 +1964,7 @@ async def handle_content_type(
         base_filename = os.path.basename(urlparse(url).path) or default_name
         try:
             decoded_name = unquote(base_filename)
-        except Exception:
+        except Exception: # pylint: disable=broad-exception-caught
             decoded_name = base_filename
 
         name_part, ext = os.path.splitext(decoded_name)
@@ -1965,7 +2006,7 @@ async def handle_content_type(
             }
         }
 
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-exception-caught
         print(f"\033[91m[ERROR {type_label.upper()}] {url}: {e}\033[0m")
         return {
             url: {
