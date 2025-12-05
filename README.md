@@ -111,6 +111,112 @@ This section lists **practical uses** for the crawler project. Each entry explai
 * **Rate-limit** and use polite concurrency to avoid overwhelming third-party servers (this crawler supports throttling).
 * **Data retention & privacy:** When collecting personal data, ensure you comply with privacy laws and your organization’s policies.
 
+"""
+Content-Type Processing Pipeline
+================================
+
+This module implements a highly extensible, regex-driven router for processing
+web resources based on their HTTP ``Content-Type``. It is a core component of
+the ELKOfIndex crawler and is responsible for downloading, categorizing,
+parsing, or ignoring resources depending on their MIME type and user-defined
+crawler configuration.
+
+Overview
+--------
+
+When the crawler fetches a URL, the detected ``Content-Type`` is matched
+against a series of regular expressions. Each regex group is associated with
+a dedicated handler function via the ``@function_for_content_type`` decorator.
+
+Example MIME routing:
+    - ``text/html``         →  ``content_type_download``
+    - ``image/*``           →  ``content_type_images``
+    - ``application/pdf``   →  ``content_type_pdfs``
+    - ``audio/*``           →  ``content_type_audios``
+    - ``video/*``           →  ``content_type_videos``
+    - ``font/*``            →  ``content_type_fonts``
+    - ``text/plain``        →  ``content_type_plain_text``
+    - *(anything else)*     →  ``content_type_ignore``
+
+Handlers may perform tasks such as:
+    - Extracting words from HTML or text files.
+    - Creating lightweight webcontent summaries.
+    - Categorizing NSFW / SFW imagery.
+    - Downloading images, audio, video, fonts, PDFs, and other media.
+    - Saving structured metadata for Elasticsearch indexing.
+    - Handling malformed resources gracefully (bad encodings, broken images, etc.)
+
+Design Goals
+------------
+
+The pipeline was designed with the following principles:
+
+1. **Extensibility**  
+   New MIME handlers can be registered simply by adding a regex group and a
+   decorated async handler function.
+
+2. **Isolation of Logic**  
+   Each handler works independently and receives a fully self-contained
+   ``args`` dictionary describing the resource.
+
+3. **Async Compatibility**  
+   Download operations, HTML parsing, and I/O-heavy tasks are handled in async
+   context wherever beneficial.
+
+4. **Fail-Safe Behavior**  
+   Bad encodings, broken images, oversized files, or unexpected server
+   responses are never fatal. Handlers catch and gracefully log errors.
+
+5. **Elasticsearch Integration**  
+   Each handler returns a structured dictionary suitable for direct indexing
+   into Elasticsearch. Keys are standardized across all resource types.
+
+Handler Return Format
+---------------------
+
+Every handler returns a metadata block in the format::
+
+    {
+        "<url>": {
+            "url": "<url>",
+            "content_type": "<MIME type>",
+            "visited": True,
+            "parent_host": "<domain>",
+            ... additional fields ...
+        }
+    }
+
+Additional fields may include:
+    - ``isopendir``: Whether the HTML resembles an open directory listing.
+    - ``words``: Extracted word tokens.
+    - ``raw_webcontent``: Raw HTML.
+    - ``min_webcontent``: Minimized text-only content.
+    - ``filename``: Saved file name (images, audio, video, etc.)
+    - ``resolution``: Pixel count (for images)
+    - ``isnsfw``: Probability score from the NSFW classifier
+    - ``source``: String identifying the handler or fallback pathway
+
+Adding New Handlers
+-------------------
+
+To support a new MIME type:
+
+1. Define a regex pattern (e.g., ``content_type_json_regex``).
+2. Create a handler function:
+       ``@function_for_content_type(content_type_json_regex)``
+3. Return a dict matching the standard output format.
+
+This makes the system highly modular and easy to evolve.
+
+Summary
+-------
+
+This module acts as the routing hub for all content-type specific logic in the
+crawler. It lets the crawler understand how to treat every kind of downloaded
+resource — from HTML and text to multimedia files — while keeping the logic 
+clean, modular, safe, and Elasticsearch-friendly.
+"""
+
 # References and sources
 
 * https://tranco-list.eu/ 
