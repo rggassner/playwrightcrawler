@@ -1853,6 +1853,42 @@ async def get_words_from_page(page) -> list[str]:
 
 @function_for_content_type(content_type_all_others_regex)
 async def content_type_ignore(args):
+    """
+    Fallback processor for any Content-Type not handled by specialized
+    functions.
+
+    This function is registered using the ``@function_for_content_type``  
+    decorator and serves as the default handler for all MIME types that do not
+    match any of the more specific content-type regex groups. It does not
+    attempt to parse, extract, or download the content; instead, it simply
+    records that the resource was visited and ignored.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing metadata about the resource being processed.
+        Expected keys include:
+        - ``url``: The URL being processed.
+        - ``content_type``: The detected MIME type.
+        - ``parent_host``: The host where the URL was discovered.
+        Additional keys may be included depending on upstream routing.
+
+    Returns
+    -------
+    dict
+        A minimal structured dictionary containing:
+        - ``url``: The processed URL.
+        - ``content_type``: MIME type.
+        - ``visited``: Always True.
+        - ``source``: Tag identifying this fallback processing path.
+        - ``parent_host``: Host where the URL originated.
+
+    Notes
+    -----
+    - This is the final catch-all content-type handler.
+    - No content inspection, HTML parsing, or file operations are performed.
+    - Useful for logging, indexing, or debugging unknown or unsupported MIME types.
+    """    
     return { args['url'] : 
             {
         "url": args['url'],
