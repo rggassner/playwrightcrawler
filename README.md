@@ -188,6 +188,8 @@ Every handler returns a metadata block in the format::
     }
 
 Additional fields may include:
+
+```
     - ``isopendir``: Whether the HTML resembles an open directory listing.
     - ``words``: Extracted word tokens.
     - ``raw_webcontent``: Raw HTML.
@@ -196,6 +198,7 @@ Additional fields may include:
     - ``resolution``: Pixel count (for images)
     - ``isnsfw``: Probability score from the NSFW classifier
     - ``source``: String identifying the handler or fallback pathway
+```
 
 ## Adding New Handlers
 
