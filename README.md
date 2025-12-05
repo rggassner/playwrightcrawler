@@ -111,9 +111,9 @@ This section lists **practical uses** for the crawler project. Each entry explai
 * **Rate-limit** and use polite concurrency to avoid overwhelming third-party servers (this crawler supports throttling).
 * **Data retention & privacy:** When collecting personal data, ensure you comply with privacy laws and your organization’s policies.
 
-"""
-Content-Type Processing Pipeline
-================================
+
+# Content-Type Processing Pipeline
+
 
 This module implements a highly extensible, regex-driven router for processing
 web resources based on their HTTP ``Content-Type``. It is a core component of
@@ -121,14 +121,16 @@ the ELKOfIndex crawler and is responsible for downloading, categorizing,
 parsing, or ignoring resources depending on their MIME type and user-defined
 crawler configuration.
 
-Overview
+## Overview
 --------
 
 When the crawler fetches a URL, the detected ``Content-Type`` is matched
 against a series of regular expressions. Each regex group is associated with
 a dedicated handler function via the ``@function_for_content_type`` decorator.
 
-Example MIME routing:
+## Example MIME routing:
+
+```
     - ``text/html``         →  ``content_type_download``
     - ``image/*``           →  ``content_type_images``
     - ``application/pdf``   →  ``content_type_pdfs``
@@ -137,6 +139,7 @@ Example MIME routing:
     - ``font/*``            →  ``content_type_fonts``
     - ``text/plain``        →  ``content_type_plain_text``
     - *(anything else)*     →  ``content_type_ignore``
+```
 
 Handlers may perform tasks such as:
     - Extracting words from HTML or text files.
@@ -146,8 +149,7 @@ Handlers may perform tasks such as:
     - Saving structured metadata for Elasticsearch indexing.
     - Handling malformed resources gracefully (bad encodings, broken images, etc.)
 
-Design Goals
-------------
+## Design Goals
 
 The pipeline was designed with the following principles:
 
@@ -171,8 +173,7 @@ The pipeline was designed with the following principles:
    Each handler returns a structured dictionary suitable for direct indexing
    into Elasticsearch. Keys are standardized across all resource types.
 
-Handler Return Format
----------------------
+## Handler Return Format
 
 Every handler returns a metadata block in the format::
 
@@ -196,8 +197,7 @@ Additional fields may include:
     - ``isnsfw``: Probability score from the NSFW classifier
     - ``source``: String identifying the handler or fallback pathway
 
-Adding New Handlers
--------------------
+## Adding New Handlers
 
 To support a new MIME type:
 
@@ -208,8 +208,8 @@ To support a new MIME type:
 
 This makes the system highly modular and easy to evolve.
 
-Summary
--------
+## Summary
+
 
 This module acts as the routing hub for all content-type specific logic in the
 crawler. It lets the crawler understand how to treat every kind of downloaded
