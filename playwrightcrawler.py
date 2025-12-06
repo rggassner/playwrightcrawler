@@ -1810,6 +1810,42 @@ def get_words(text: bytes | str) -> list[str]:
     return extract_top_words_from_text(text)
 
 async def get_words_from_page(page) -> list[str]:
+    """
+    Extract visible text content from a Playwright page and return a list of
+    high-value words.
+
+    This function executes a JavaScript snippet inside the browser context to
+    recursively walk the DOM, collecting visible text nodes while ignoring
+    non-content elements such as ``<script>``, ``<style>``, ``<noscript>``,
+    and ``<iframe>``. The extracted raw text is then combined and passed to
+    ``extract_top_words_from_text`` to produce a refined list of relevant
+    tokens.
+
+    Parameters
+    ----------
+    page : playwright.async_api.Page
+        A Playwright page instance from which text content will be extracted.
+
+    Returns
+    -------
+    list[str]
+        A list of top words extracted from the page’s visible text content.
+        Returns an empty list if evaluation fails or no text is found.
+
+    Notes
+    -----
+    - The DOM traversal is executed entirely inside the sandboxed browser
+      environment using ``page.evaluate``.
+    - All errors inside the page’s JS context or during evaluation are caught
+      and logged; the function always fails safely.
+    - The output word list depends on the implementation of
+      ``extract_top_words_from_text`` (e.g., tokenization, stopword removal,
+      frequency ranking).
+    - Hidden, overlayed, or CSS-invisible text may still be captured if present
+      in the DOM; this function focuses on structural filtering, not layout
+      visibility.
+
+    """    
     # JS snippet that safely walks the DOM and collects text nodes
     js = """
     () => { 
