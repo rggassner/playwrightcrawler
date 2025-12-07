@@ -1800,6 +1800,38 @@ async def get_links_page(page, base_url: str) -> list[str]:
 
 
 def get_words(text: bytes | str) -> list[str]:
+    """
+    Extract a list of high-value words from a text or byte sequence.
+
+    This helper function normalizes input by accepting either ``str`` or
+    ``bytes``. Byte content is decoded as UTF-8 with replacement for invalid
+    sequences to ensure robustness when dealing with crawled data. The final
+    decoded string is passed to ``extract_top_words_from_text`` for token
+    extraction, filtering, and ranking.
+
+    Parameters
+    ----------
+    text : bytes or str
+        The textual content to process. May be a raw byte sequence or a
+        Unicode string. Empty values are handled gracefully.
+
+    Returns
+    -------
+    list[str]
+        A list of extracted top words. Returns an empty list when the input is
+        empty, cannot be decoded, or contains no meaningful text.
+
+    Notes
+    -----
+    - The UTF-8 decoding path is tolerant of malformed byte sequences
+      (invalid data is replaced rather than raising an error).
+    - The quality and format of the output words depend on
+      ``extract_top_words_from_text``, which typically applies stopword
+      removal, tokenization, and frequency-based ranking.
+    - Designed to be used across multiple content-type handlers
+      (HTML, text files, PDFs, etc.) to maintain consistency in word
+      extraction.
+    """    
     if not text:
         return []
     if isinstance(text, bytes):
