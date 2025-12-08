@@ -1775,27 +1775,67 @@ def function_for_content_type(regexp_list):
         return f
     return get_content_type_function
 
-async def get_links_page(page, base_url: str) -> list[str]:
-    links = set()
 
+async def get_links_page(page, base_url: str) -> list[str]:
+]:
+    """
+    Extract all link-like URLs from a Playwright-rendered web page.
+
+    This function evaluates JavaScript within the browser context to collect
+    URLs from common HTML elements that reference external resources,
+    including:
+
+    - ``<a href="...">``
+    - ``<link href="...">``
+    - ``<script src="...">``
+    - ``<img src="...">``
+
+    Extraction is performed through a sandboxed helper coroutine
+    (``safe_extract``), which safely queries the DOM and returns only valid
+    string attributes. Any failures (DOM exceptions, JS errors, selector
+    failures, etc.) are caught and logged without interrupting the crawl.
+
+    Parameters
+    ----------
+    page : playwright.async_api.Page
+        A Playwright Page instance from which link references will be collected.
+
+    base_url : str
+        The URL of the page being processed, used only for logging context in
+        case of extraction errors.
+
+    Returns
+    -------
+    list[str]
+        A list of raw URLs extracted from the page. These URLs are *not*
+        normalized, resolved, or validated — the caller is responsible for
+        applying URL joining, filtering, deduplication, or domain checks.
+
+    Notes
+    -----
+    - The function returns all discovered URLs as-is, which may include
+      relative paths, absolute links, JavaScript URLs, or malformed values.
+    - The internal ``safe_extract`` helper isolates selector-specific failures
+      to prevent one broken tag type from affecting others.
+    - Output order is not guaranteed due to the internal use of ``set`` for
+      deduplication.
+    - Designed to be fast, tolerant, and safe for large-scale crawling.
+    """    
+    links = set()
     async def safe_extract(selector: str, attr: str, tag_name: str):
         try:
             values = await page.evaluate(f"""
                 () => Array.from(document.querySelectorAll('{selector}'))
                           .map(e => e['{attr}'])
             """)
-            # Filter only strings
             return [v for v in values if isinstance(v, str)]
         except Exception as e: # pylint: disable=broad-exception-caught
             print(f"[WARN] Could not extract <{tag_name}> from {base_url}: {e}")
             return []
-
-    # Extract all sources safely
     links.update(await safe_extract("a[href]", "href", "a"))
     links.update(await safe_extract("link[href]", "href", "link"))
     links.update(await safe_extract("script[src]", "src", "script"))
     links.update(await safe_extract("img[src]", "src", "img"))
-
     return list(links)
 
 
