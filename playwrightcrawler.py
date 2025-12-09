@@ -1769,6 +1769,36 @@ def sanitize_url(
 
 
 def function_for_content_type(regexp_list):
+    """
+    Decorator factory that registers a function to handle specific content types.
+
+    This factory receives a list of regular expression patterns and returns a
+    decorator. When applied to a function, the decorator compiles each pattern
+    and stores it along with the function in the global `content_type_functions`
+    list. Later, when processing URLs or resources, the crawler can select the
+    appropriate function based on the detected content type that matches one of
+    the registered regular expressions.
+
+    Parameters
+    ----------
+    regexp_list : list[str]
+        A list of regular expression strings. Each expression represents a
+        content-type pattern that should be associated with the decorated
+        function.
+
+    Returns
+    -------
+    Callable
+        A decorator that registers the decorated function as a handler for all
+        given content-type patterns.
+
+    Notes
+    -----
+    - The decorated function is not modified; it is simply registered.
+    - Regexes are compiled using case-insensitive (`re.I`) and unicode (`re.U`)
+      flags.
+    - A global list named `content_type_functions` must exist and be writable.
+    """    
     def get_content_type_function(f):
         for regexp in regexp_list:
             content_type_functions.append((re.compile(regexp, flags=re.I | re.U), f))
@@ -1777,7 +1807,6 @@ def function_for_content_type(regexp_list):
 
 
 async def get_links_page(page, base_url: str) -> list[str]:
-]:
     """
     Extract all link-like URLs from a Playwright-rendered web page.
 
