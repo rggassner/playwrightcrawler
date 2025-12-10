@@ -1409,7 +1409,7 @@ def is_embedded_url(url: str) -> bool:
     return url.startswith(("data:", "blob:", "about:", "javascript:"))
 
 
-# pylint: disable= too-many-locals
+# pylint: disable= too-many-locals,too-many-statements
 def preprocess_crawler_data(data: dict) -> dict:
     crawledcontent = data.get("crawledcontent", {})
     crawledlinks = data.get("crawledlinks", set())
@@ -1613,14 +1613,44 @@ def get_words_from_soup(soup) -> list[str]:
     return extract_top_words_from_text(combined_text)
 
 
-# pylint: disable= too-many-locals
+# pylint: disable= too-many-locals,too-many-statements, dangerous-default-value
 def sanitize_url(
         url,
         skip_log_tags=['FINAL_NORMALIZE',
                        'STRIP_WHITESPACE',
                        'NORMALIZE_PATH_SLASHES']):
+    """
+    Sanitizes and normalizes a URL, correcting malformed schemes, cleaning
+    hostnames (including optional userinfo), collapsing redundant slashes,
+    and stripping unusual surrounding quotes. The function attempts to
+    preserve legitimate URL structure while removing invalid characters,
+    default ports, and malformed patterns.
+
+    Behavior summary:
+    - Strips whitespace and various quote-like characters around the URL.
+    - Fixes common scheme typos (e.g., htpps, http:, http//) and normalizes
+      them to http:// or https:// when possible.
+    - Cleans the hostname and optional username:password@userinfo, removing
+      invalid characters and discarding invalid or default ports.
+    - Normalizes the path by collapsing repeated slashes, except inside
+      embedded full URLs.
+    - Rebuilds the final URL using urlsplit/urlunsplit and strips fragments.
+    - Returns an empty string if the input is missing or not a string.
+
+    Parameters:
+        url (str): The raw URL to sanitize.
+        skip_log_tags (list[str], optional): Tags that may disable
+            specific logging or post-processing steps in the caller.
+            Not used directly in this function but preserved for
+            compatibility with the caller's logging pipeline.
+
+    Returns:
+        str: A sanitized and normalized URL. If parsing or normalization
+        fails at any point, a best-effort cleaned URL is returned.
+    """            
     if skip_log_tags is None:
         skip_log_tags = set()
+        
 
     def clean_hostname_with_userinfo(netloc, scheme):
         """
@@ -1685,8 +1715,8 @@ def sanitize_url(
         (r'^\u2018(.*)\u2019$', r'\1'),
         (r'^"(.*)″$', r'\1'),
     ]
-    for pattern, replacement in special_quote_pairs:
-        cleaned = re.sub(pattern, replacement, url)
+    for quote_pattern, replacement in special_quote_pairs:
+        cleaned = re.sub(quote_pattern, replacement, url)
         url = cleaned
 
     scheme_fixes = [
@@ -1708,8 +1738,8 @@ def sanitize_url(
         (r'^%20http://', 'http://'), (r'^%22mailto:', 'mailto:'),
         (r'^httpqs://', 'https://www.'), (r'^://', 'https://')
     ]
-    for pattern, replacement in scheme_fixes:
-        fixed = re.sub(pattern, replacement, url)
+    for scheme_pattern, replacement in scheme_fixes:
+        fixed = re.sub(scheme_pattern, replacement, url)
         url = fixed
 
     cleaned = re.sub(r'^[a-zA-Z."(´]https://', 'https://', url)
