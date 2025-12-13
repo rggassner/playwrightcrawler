@@ -1605,6 +1605,33 @@ def email_url(args):
     return []
 
 def get_words_from_soup(soup) -> list[str]:
+    """
+    Extract and rank relevant words from a BeautifulSoup document.
+
+    This function walks through all text nodes in the provided BeautifulSoup
+    object, excluding text that belongs to tags listed in
+    `soup_tag_blocklist` (such as scripts or styles). The remaining text is
+    concatenated into a single string and processed to extract the most
+    relevant or frequent words.
+
+    Parameters
+    ----------
+    soup : bs4.BeautifulSoup
+        A parsed HTML document from which visible text content will be
+        extracted.
+
+    Returns
+    -------
+    list[str]
+        A list of words extracted from the visible text of the document,
+        as determined by `extract_top_words_from_text`.
+
+    Notes
+    -----
+    - Tag filtering is based on the parent tag name of each text node.
+    - The actual word selection, normalization, and ranking logic is delegated
+      to `extract_top_words_from_text`.
+    """    
     text_parts = [
         t for t in soup.find_all(string=True)
         if t.parent.name not in soup_tag_blocklist
