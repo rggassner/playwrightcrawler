@@ -1584,6 +1584,46 @@ def full_url(args):
 
 @function_for_url([r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|mailo:|mail to:|Email para:|email :|email:|E-mail: |mail-to:|maitlo:|mail.to:)"])
 def email_url(args):
+    """
+    Extract and normalize email addresses from mail-style URLs.
+
+    This function handles URLs that represent email links or textual email
+    prefixes (for example, ``mailto:``, ``email:``, or common misspellings).
+    It attempts to extract a valid email address from the URL, validate it
+    using a strict regular expression, and return it in a structured result
+    suitable for indexing.
+
+    The extracted email is associated with the parent page URL and host,
+    allowing correlation between discovered email addresses and the page
+    where they were found.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing at least:
+        - ``url`` (str): The raw URL or string containing the email prefix.
+        - ``parent_url`` (str): The URL of the page where the email was found.
+
+    Returns
+    -------
+    list[dict]
+        A list containing a single result dictionary when a valid email
+        address is found, or an empty list if extraction or validation fails.
+        Each result includes:
+        - ``url``: A composite identifier combining parent URL and email.
+        - ``emails``: A list containing the extracted email address.
+        - ``visited``: Always ``True`` for successfully parsed entries.
+        - ``source``: The string ``"email_url"``.
+        - ``parent_host``: Hostname of the parent URL.
+        - ``host``: Same as ``parent_host``.
+        - ``isopendir``: Always ``False``.
+
+    Notes
+    -----
+    - Multiple common misspellings and localized variants of email prefixes
+      are intentionally supported.
+    - Email validation is conservative to avoid indexing malformed addresses.
+    """    
     address_search = re.search(
         r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|mailo:|mail to:|Email para:|email :|email:|E-mail: |mail-to:|maitlo:|mail.to:)(.*)",
         args['url'],
