@@ -1573,6 +1573,38 @@ def relative_url(args):
 
 @function_for_url([r"^https*://", r"^ftp://"])
 def full_url(args):
+    """
+    Handle fully qualified URLs discovered during crawling.
+
+    This function processes absolute URLs that already include a scheme
+    (such as ``http://``, ``https://``, or ``ftp://``). It registers the URL
+    as a new crawl candidate, associates it with the parent page host, and
+    marks it as unvisited so it can be scheduled for crawling later.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing at least:
+        - ``url`` (str): The fully qualified URL that was found.
+        - ``parent_url`` (str): The URL of the page where this link appeared.
+
+    Returns
+    -------
+    list[dict]
+        A list containing a single URL record with the following fields:
+        - ``url``: The discovered absolute URL.
+        - ``visited``: Always ``False``, indicating it has not been crawled yet.
+        - ``source``: The string ``"full_url"``.
+        - ``parent_host``: Hostname extracted from ``parent_url``.
+        - ``host``: Hostname extracted from the discovered URL.
+
+    Notes
+    -----
+    - This handler does not normalize or de-duplicate URLs; that is expected
+      to be handled by later stages of the crawling pipeline.
+    - FTP URLs are included for completeness and treated the same as HTTP(S)
+      URLs at this stage.
+    """    
     parent_host = urlsplit(args['parent_url']).hostname
     return [{
         "url": args['url'],
