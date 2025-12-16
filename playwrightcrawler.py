@@ -1561,6 +1561,39 @@ def function_for_url(regexp_list):
     ]
 )
 def relative_url(args):
+    """
+    Handle relative and partially qualified URLs discovered in a page.
+
+    This function processes URLs that do not include a scheme or hostname,
+    such as paths starting with ``/``, ``./``, ``../``, or loosely structured
+    relative references commonly found in malformed or dynamically generated
+    HTML. The URL is resolved against the parent page URL to produce a fully
+    qualified absolute URL suitable for crawling.
+
+    Parameters
+    ----------
+    args : dict
+        A dictionary containing at least:
+        - ``url`` (str): The relative or partially qualified URL found in the page.
+        - ``parent_url`` (str): The absolute URL of the page where the link appeared.
+
+    Returns
+    -------
+    list[dict]
+        A list containing a single URL record with the following fields:
+        - ``url``: The resolved absolute URL obtained via ``urljoin``.
+        - ``visited``: Always ``False``, indicating the URL is pending crawl.
+        - ``source``: The string ``"relative_url"``.
+        - ``parent_host``: Hostname extracted from ``parent_url``.
+        - ``host``: Hostname extracted from the resolved URL.
+
+    Notes
+    -----
+    - This handler is intentionally permissive to catch non-standard or
+      malformed relative links often found in real-world HTML.
+    - Final URL normalization and de-duplication are expected to be handled
+      by downstream components of the crawler.
+    """    
     out_url = urljoin(args['parent_url'], args['url'])
     parent_host = urlsplit(args['parent_url']).hostname
     return [{
