@@ -1546,6 +1546,36 @@ def get_directory_levels(url_path):
 
 
 def function_for_url(regexp_list):
+    """
+    Decorator factory that registers a function to handle URLs matching specific patterns.
+
+    This factory accepts a list of regular expression patterns and returns a
+    decorator. When applied to a function, the decorator compiles each regex
+    and stores it along with the function in the global `url_functions` list.
+    Later, when the crawler encounters a URL, it can select the appropriate
+    handler function based on the first matching regex.
+
+    Parameters
+    ----------
+    regexp_list : list[str]
+        A list of regular expression strings. Each regex represents a URL
+        pattern that the decorated function should handle (e.g., mailto
+        links, relative paths, absolute HTTP URLs).
+
+    Returns
+    -------
+    Callable
+        A decorator that registers the decorated function as a handler for all
+        provided URL patterns.
+
+    Notes
+    -----
+    - The decorated function is not modified; it is simply registered.
+    - Regexes are compiled with case-insensitive (`re.I`) and Unicode (`re.U`)
+      flags.
+    - A global list named `url_functions` must exist and be writable.
+    - This pattern allows modular, extensible URL handling within the crawler.
+    """    
     def get_url_function(f):
         for regexp in regexp_list:
             url_functions.append((re.compile(regexp, flags=re.I | re.U), f))
