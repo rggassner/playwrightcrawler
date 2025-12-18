@@ -1529,6 +1529,38 @@ def preprocess_crawler_data(data: dict) -> dict:
 
 
 def get_directory_levels(url_path):
+    """
+    Normalize a URL path into fixed directory levels.
+
+    This function splits a URL path into its directory components and pads
+    the result to a fixed length defined by ``MAX_DIR_LEVELS``. It returns both
+    an ordered list of directory levels and a dictionary mapping each level to
+    a named key (e.g., ``directory_level_1``, ``directory_level_2``).
+
+    This structure is useful for indexing, analytics, or grouping URLs by
+    hierarchical depth in systems such as Elasticsearch.
+
+    Parameters
+    ----------
+    url_path : str
+        The path portion of a URL (e.g., ``"/a/b/c/"`` or ``"/products/item"``).
+
+    Returns
+    -------
+    dict
+        A dictionary with two keys:
+        - ``directory_levels`` (list[str]): A list of directory names, padded
+          with empty strings to reach ``MAX_DIR_LEVELS``.
+        - ``directory_level_map`` (dict[str, str]): A mapping of directory level
+          names (``directory_level_1`` ... ``directory_level_N``) to their
+          corresponding directory values.
+
+    Notes
+    -----
+    - Empty path segments and leading/trailing slashes are ignored.
+    - Padding ensures consistent field availability when storing structured
+      data in document-oriented databases.
+    """    
     # Split the URL path into parts and remove empty strings
     levels = [p for p in url_path.strip("/").split("/") if p]
 
