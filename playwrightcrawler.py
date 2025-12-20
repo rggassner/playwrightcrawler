@@ -1409,8 +1409,55 @@ def is_embedded_url(url: str) -> bool:
     return url.startswith(("data:", "blob:", "about:", "javascript:"))
 
 
-# pylint: disable= too-many-locals,too-many-statements
+# pylint: disable= too-many-locals,too-many-statements,too-many-branches
 def preprocess_crawler_data(data: dict) -> dict:
+    """
+    Normalize, enrich, and filter crawler output before persistence.
+
+    This function takes the raw results produced by the crawler and performs
+    several preprocessing steps to prepare the data for storage and further
+    crawling. It filters invalid or undesired URLs, expands directory paths
+    when open-directory hunting is enabled, normalizes URLs, and enriches
+    crawled documents with derived metadata.
+
+    The preprocessing pipeline includes:
+    - URL normalization and sanitization
+    - Host, URL, and pattern allow/block list enforcement
+    - Detection and exclusion of embedded or oversized URLs
+    - Expansion of directory paths for open-directory discovery
+    - Extraction of query parameters and file extensions
+    - Computation of host and directory hierarchy levels
+    - Injection of crawler-specific metadata (e.g. node ID)
+
+    Parameters
+    ----------
+    data : dict
+        A dictionary containing crawler output with the following keys:
+        - ``crawledcontent`` (dict): Mapping of URL to extracted document data.
+        - ``crawledlinks`` (set | iterable): Collection of discovered URLs
+          pending processing.
+
+    Returns
+    -------
+    dict
+        A dictionary with two keys:
+        - ``crawledcontent`` (dict): The filtered and enriched content documents,
+          ready for persistence.
+        - ``crawledlinks`` (dict): A mapping of normalized URLs to their
+          corresponding hostnames, suitable for enqueueing future crawl tasks.
+
+    Notes
+    -----
+    - URLs with repeated path segments, blocked hosts, blocked URLs, missing
+      hosts, embedded data (e.g. base64), or excessive length are discarded.
+    - When ``HUNT_OPEN_DIRECTORIES`` is enabled, directory trees are expanded
+      recursively to increase discovery coverage.
+    - Host and directory levels are padded to fixed sizes
+      (``MAX_HOST_LEVELS``, ``MAX_DIR_LEVELS``) to ensure consistent indexing.
+    - Query variables and values are extracted only when present.
+    - All failures during URL normalization are caught and logged, preventing
+      a single malformed URL from interrupting the pipeline.
+    """    
     crawledcontent = data.get("crawledcontent", {})
     crawledlinks = data.get("crawledlinks", set())
 
