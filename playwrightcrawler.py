@@ -1406,6 +1406,31 @@ def get_host_levels(hostname):
 
 
 def is_embedded_url(url: str) -> bool:
+    """
+    Determine whether a URL uses an embedded or non-navigable scheme.
+
+    This function checks if the given URL starts with schemes that represent
+    embedded, inline, or browser-internal resources rather than externally
+    fetchable locations. Such URLs are typically ignored by crawlers since
+    they do not point to standalone network resources.
+
+    Parameters
+    ----------
+    url : str
+        The URL to evaluate.
+
+    Returns
+    -------
+    bool
+        ``True`` if the URL uses an embedded or internal scheme
+        (e.g., ``data:``, ``blob:``, ``about:``, ``javascript:``),
+        otherwise ``False``.
+
+    Notes
+    -----
+    - Embedded URLs often contain inline content or browser-generated objects.
+    - Excluding these URLs helps avoid invalid requests and crawler noise.
+    """    
     return url.startswith(("data:", "blob:", "about:", "javascript:"))
 
 
