@@ -1393,6 +1393,38 @@ def create_directories():
 
 
 def get_host_levels(hostname):
+    """
+    Decompose a hostname into hierarchical host levels.
+
+    This function splits a hostname into its dot-separated components,
+    removes any port information, and returns both an ordered list of host
+    levels and a dictionary mapping each level to a named key
+    (e.g., ``host_level_1``, ``host_level_2``).
+
+    The resulting structure is useful for grouping, filtering, or aggregating
+    data by domain hierarchy in systems such as Elasticsearch.
+
+    Parameters
+    ----------
+    hostname : str
+        A hostname or host:port string (e.g., ``"sub.example.com:8080"``).
+
+    Returns
+    -------
+    dict
+        A dictionary with two keys:
+        - ``host_levels`` (list[str]): The hostname split into components,
+          ordered from left to right (e.g., ``["sub", "example", "com"]``).
+        - ``host_level_map`` (dict[str, str]): A mapping of host level field
+          names (``host_level_1`` ... ``host_level_N``) to their corresponding
+          hostname components.
+
+    Notes
+    -----
+    - Port numbers are stripped before processing.
+    - No public suffix normalization is performed (e.g., ``co.uk`` handling).
+    - Field naming is designed for structured indexing and querying.
+    """    
     hostname = hostname.split(':')[0]  # Remove port if present
     parts = hostname.split('.')
     parts_reversed = list(parts)
