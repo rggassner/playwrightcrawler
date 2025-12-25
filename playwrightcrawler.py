@@ -1387,6 +1387,22 @@ class DatabaseConnection:
 
 
 def create_directories():
+    """
+    Create all required output and working directories.
+
+    This function ensures that every directory used by the crawler and
+    downloader subsystems exists. It creates directories for images,
+    media files, documents, archives, databases, and input queues as
+    defined by the corresponding global path constants.
+
+    Existing directories are left untouched.
+
+    Notes
+    -----
+    - Directory creation is idempotent via ``exist_ok=True``.
+    - All directory paths are expected to be defined as global constants.
+    - Intended to be called during application startup or initialization.
+    """    
     dirs = [IMAGES_FOLDER, NSFW_FOLDER, SFW_FOLDER , FONTS_FOLDER, VIDEOS_FOLDER,  MIDIS_FOLDER , AUDIOS_FOLDER, PDFS_FOLDER ,DOCS_FOLDER , DATABASES_FOLDER, TORRENTS_FOLDER,COMPRESSEDS_FOLDER , COMICS_FOLDER, INPUT_FOLDER]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
