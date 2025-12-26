@@ -1320,6 +1320,31 @@ class DatabaseConnection:
         return self.es.search(*args, **kwargs)
 
     def scroll(self, *args, **kwargs):
+        """
+        Proxy method for the Elasticsearch scroll API.
+
+        This method forwards all positional and keyword arguments directly to the
+        underlying Elasticsearch client’s ``scroll`` method. It exists primarily
+        to provide a consistent interface or abstraction layer within the class.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments passed directly to ``elasticsearch.Elasticsearch.scroll``.
+        **kwargs
+            Keyword arguments passed directly to ``elasticsearch.Elasticsearch.scroll``.
+
+        Returns
+        -------
+        Any
+            The response returned by the Elasticsearch ``scroll`` call.
+
+        Notes
+        -----
+        - No additional logic or validation is performed.
+        - Useful for mocking, instrumentation, or future extension without
+          changing call sites.
+        """        
         return self.es.scroll(*args, **kwargs)
 
     def _get_index_name(self, base: str) -> str:
