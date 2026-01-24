@@ -1317,6 +1317,34 @@ class DatabaseConnection:
         self.es.close()
 
     def search(self, *args, **kwargs):
+        """
+        Proxy method for the Elasticsearch search API.
+
+        This method forwards all positional and keyword arguments directly to the
+        underlying Elasticsearch client’s ``search`` method. It provides a stable
+        abstraction layer so calling code does not depend on the concrete client
+        implementation.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments passed directly to
+            ``elasticsearch.Elasticsearch.search``.
+        **kwargs
+            Keyword arguments passed directly to
+            ``elasticsearch.Elasticsearch.search``.
+
+        Returns
+        -------
+        Any
+            The response returned by the Elasticsearch ``search`` call.
+
+        Notes
+        -----
+        - No additional logic, validation, or result processing is performed.
+        - Useful for mocking, instrumentation, or extending behavior later without
+          changing existing call sites.
+        """
         return self.es.search(*args, **kwargs)
 
     def scroll(self, *args, **kwargs):
@@ -3274,7 +3302,7 @@ async def process_input_url_files(db):
 
 
 # pylint: disable=too-many-locals,too-many-statements,too-many-positional-arguments,too-many-arguments
-def cleanup_elasticsearch_indexes( 
+def cleanup_elasticsearch_indexes(
     db,
     remove_repeated_segments=False,
     remove_empty_ctype=False,
