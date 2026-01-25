@@ -1314,6 +1314,18 @@ class DatabaseConnection:
         self.con = self.es
 
     def close(self):
+        """
+        Close the underlying Elasticsearch client connection.
+
+        This method delegates directly to the Elasticsearch client’s ``close``
+        method and should be called when the database connection is no longer
+        needed to ensure resources such as open HTTP connections are released.
+
+        Notes
+        -----
+        - Safe to call during application shutdown or teardown.
+        - No additional cleanup or state management is performed.
+        """
         self.es.close()
 
     def search(self, *args, **kwargs):
