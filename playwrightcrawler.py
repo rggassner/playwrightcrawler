@@ -1292,6 +1292,27 @@ def url_to_id(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 def get_index_name(base: str) -> str:
+    """
+    Generate a time-partitioned Elasticsearch index name.
+
+    This function appends a UTC year-month suffix (``YYYY-MM``) to the given
+    base index name, producing indices suitable for monthly partitioning.
+
+    Parameters
+    ----------
+    base : str
+        Base index name without any date suffix.
+
+    Returns
+    -------
+    str
+        The full index name with a ``YYYY-MM`` UTC suffix appended.
+
+    Notes
+    -----
+    - The timestamp is generated using timezone-aware UTC time.
+    - Useful for organizing indices by month while keeping caller logic simple.
+    """
     suffix = datetime.now(timezone.utc).strftime("%Y-%m")
     return f"{base}-{suffix}"
 
