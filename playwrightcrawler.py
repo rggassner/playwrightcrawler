@@ -1297,7 +1297,38 @@ def get_index_name(base: str) -> str:
 
 
 class DatabaseConnection:
+    """
+    Lightweight abstraction layer over the Elasticsearch client.
 
+    This class centralizes Elasticsearch configuration, connection lifecycle
+    management, and common operations used by the crawler, such as searching,
+    scrolling, and bulk persistence of crawled content and discovered links.
+
+    Index names are automatically suffixed with a UTC year-month component,
+    enabling time-partitioned indices without leaking that concern to callers.
+
+    Responsibilities
+    ----------------
+    - Initialize and configure the Elasticsearch client.
+    - Provide proxy methods for core Elasticsearch APIs (e.g. search, scroll).
+    - Manage connection lifecycle (open/close).
+    - Persist crawled content and links using efficient bulk operations.
+
+    Design Notes
+    ------------
+    - Acts as a thin wrapper; most methods delegate directly to the underlying
+      Elasticsearch client without additional validation or transformation.
+    - Intended to decouple the rest of the codebase from the concrete
+      Elasticsearch client for easier testing, mocking, and future extension.
+    - All timestamps are stored as timezone-aware UTC datetimes.
+
+    Attributes
+    ----------
+    es : elasticsearch.Elasticsearch
+        The underlying Elasticsearch client instance.
+    con : elasticsearch.Elasticsearch
+        Alias for ``es``, kept for compatibility or semantic clarity.
+    """
     def __init__(self):
         es_config = {
             "hosts": [f"https://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"],
