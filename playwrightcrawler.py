@@ -1289,6 +1289,30 @@ def get_oldest_host_domains(db, size=RANDOM_SITES_QUEUE):
 
 
 def url_to_id(url: str) -> str:
+    """
+    Generate a deterministic document ID from a URL.
+
+    This function computes a SHA-256 hash of the given URL and returns its
+    hexadecimal representation. The resulting value is suitable for use as
+    a stable Elasticsearch document ID, ensuring that the same URL always
+    maps to the same identifier.
+
+    Parameters
+    ----------
+    url : str
+        The URL to be hashed.
+
+    Returns
+    -------
+    str
+        A hexadecimal SHA-256 hash representing the URL.
+
+    Notes
+    -----
+    - Produces a fixed-length, collision-resistant identifier.
+    - Avoids issues with special characters or length limits in document IDs.
+    - Deterministic by design: identical URLs yield identical IDs.
+    """
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 def get_index_name(base: str) -> str:
