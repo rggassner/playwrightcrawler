@@ -1252,6 +1252,40 @@ def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
 
 
 def get_oldest_host_domains(db, size=RANDOM_SITES_QUEUE):
+    """
+    Retrieve one of the oldest known URLs per host from Elasticsearch.
+
+    This function queries the links index (across all date-partitioned
+    indices) sorted by creation time in ascending order, then selects the
+    first encountered URL for each distinct host. Because results are sorted
+    oldest-first, this effectively returns the oldest known URL per host.
+
+    The process stops early once the requested number of unique hosts is
+    collected.
+
+    Parameters
+    ----------
+    db
+        Database connection object providing access to an Elasticsearch client.
+        Expected to expose an ``es`` attribute.
+    size : int, optional
+        Maximum number of unique host URLs to return. Defaults to
+        ``RANDOM_SITES_QUEUE``.
+
+    Returns
+    -------
+    list[str]
+        A list of URLs, each belonging to a different host, ordered implicitly
+        by earliest discovery time.
+
+    Notes
+    -----
+    - Queries all indices matching ``{LINKS_INDEX}-*``.
+    - Assumes a ``created_at`` field is present and sortable.
+    - Only a single URL is returned per host.
+    - Stops scanning results as soon as the desired number of hosts is reached
+      to reduce unnecessary processing.
+    """
     urls_index = f"{LINKS_INDEX}-*"
     host_to_url = {}
 
