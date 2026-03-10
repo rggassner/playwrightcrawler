@@ -11,7 +11,6 @@ from pathlib import PurePosixPath
 from collections import Counter
 import random
 import hashlib
-import warnings
 import fcntl
 
 import httpx
@@ -30,6 +29,7 @@ import absl.logging
 from urllib3.exceptions import InsecureRequestWarning
 
 from config import *
+
 
 
 
@@ -1194,8 +1194,6 @@ def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
 
     # Choose a random timestamp between first and last
     if isinstance(first_ts, str):
-        import dateutil.parser
-        from datetime import datetime
         first_ts = dateutil.parser.isoparse(first_ts)
         last_ts = dateutil.parser.isoparse(last_ts)
     random_ts = first_ts + (last_ts - first_ts) * random.random()
@@ -3424,7 +3422,7 @@ async def process_input_url_files(db):
 
 
 # pylint: disable=too-many-locals,too-many-statements,too-many-positional-arguments,too-many-arguments
-def cleanup_elasticsearch_indexes(
+def cleanup_elasticsearch_indexes( 
     db,
     remove_repeated_segments=False,
     remove_empty_ctype=False,
@@ -5221,4 +5219,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
