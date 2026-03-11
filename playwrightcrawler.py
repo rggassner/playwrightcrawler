@@ -1,46 +1,50 @@
 #!venv/bin/python3
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3.*doesn't match a supported version",
+    category=Warning
+)
+from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
+from pathlib import PurePosixPath
+from io import BytesIO
+from datetime import datetime, timezone
 import sys
 import os
 import re
 import asyncio
 import argparse
-from datetime import datetime, timezone
-from io import BytesIO
-from urllib.parse import urljoin, urlsplit, unquote, urlparse, parse_qs, urlunsplit
-from pathlib import PurePosixPath
+import fcntl
+import hashlib
 from collections import Counter
 import random
-import hashlib
-import fcntl
-
 import httpx
-import urllib3
 import chardet
 import numpy as np
 import psutil
 import dateutil.parser
 from fake_useragent import UserAgent
+from urllib3.exceptions import InsecureRequestWarning
+import urllib3
+from urllib3.exceptions import InsecureRequestWarning
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from bs4 import MarkupResemblesLocatorWarning
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
+warnings.filterwarnings("ignore", message=".*verify_certs=False is insecure.*")
+
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
 from PIL import Image, UnidentifiedImageError
-from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 from playwright.async_api import async_playwright, Error as PlaywrightError
 import absl.logging
-from urllib3.exceptions import InsecureRequestWarning
-
 from config import *
 
 
 
 
 absl.logging.set_verbosity('error')
-warnings.filterwarnings("ignore", category=InsecureRequestWarning)
-warnings.filterwarnings(
-        "ignore",
-        category=Warning,
-        message=".*verify_certs=False is insecure.*")
-warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 ua = UserAgent()
@@ -54,8 +58,6 @@ soup_tag_blocklist = {"script", "style", "noscript", "iframe", "meta", "head", "
 url_functions = []
 content_type_functions = []
 results = {"crawledcontent": {}, "crawledlinks": set()}
-
-
 
 content_type_octetstream = [
         r"^text/octet$",
@@ -1155,7 +1157,7 @@ def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) 
                 return True
     return False
 
-def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
+def get_random_host_domains(db, size=RANDOM_SITES_QUEUE): #pylint: disable=too-many-locals
     """
     Efficiently retrieve a random sample of URLs, one per host, using Elasticsearch search_after pagination.
 
