@@ -176,8 +176,6 @@ SCROLL_DELAY = 1.0
 # --- Fast crawler ---
 # --------------------
 
-# Delay between fast buckets. Used to decrease the elastic search access.
-FAST_DELAY = 2
 
 # When working with only one worker and if you want to avoid WAFs
 FAST_RANDOM_MIN_WAIT = 0
@@ -186,8 +184,6 @@ FAST_RANDOM_MAX_WAIT = 0
 MAX_FAST_WORKERS = 8
 
 USE_OCTET_STREAM = True
-
-STRICT_EXTENSION_QUERY = True
 
 # --------------------------
 # --- Blocks and removes ---
