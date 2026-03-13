@@ -1144,12 +1144,12 @@ def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) 
     for pattern_len in range(1, min(max_pattern, len(segments) // min_repeats) + 1):
         # Convert to tuple for hashable pattern comparison
         for i in range(len(segments) - pattern_len * min_repeats + 1):
-            pattern = segments[i:i + pattern_len]
+            seg_pattern = segments[i:i + pattern_len]
 
             # Count how many times it repeats consecutively
             repeat_count = 1
             j = i + pattern_len
-            while j + pattern_len <= len(segments) and segments[j:j + pattern_len] == pattern:
+            while j + pattern_len <= len(segments) and segments[j:j + pattern_len] == seg_pattern:
                 repeat_count += 1
                 j += pattern_len
 
@@ -5221,3 +5221,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
