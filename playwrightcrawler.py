@@ -890,7 +890,6 @@ EXTENSION_MAP = {
         ".vsd": content_type_doc_regex,
         ".xls": content_type_doc_regex,
         ".xlsx": content_type_doc_regex,
-        ".otf": content_type_doc_regex,
         ".ttf": content_type_font_regex,
         ".otf": content_type_font_regex,
         ".pfb": content_type_font_regex,
@@ -970,7 +969,6 @@ EXTENSION_MAP = {
         ".mpeg": content_type_video_regex,
         ".ogv": content_type_video_regex,
         ".swf": content_type_video_regex,
-        ".webm": content_type_video_regex,
         ".wm": content_type_video_regex,
         ".wmv": content_type_video_regex,
     }
@@ -978,41 +976,41 @@ EXTENSION_MAP = {
 
 def db_create_monthly_indexes(db=None):
     """
-    Initialize or retrieve the current month's Elasticsearch index names.
+    Validate the database connection before creating monthly indices.
 
-    This function ensures that the monthly index naming convention is
-    properly resolved for both the URL and content indexes. It uses the
-    helper `get_index_name()` to construct the full index names based
-    on the current date, typically following a pattern like:
-    `urls-2025-11` and `content-2025-11`.
+    This function ensures that a valid database connection object is
+    provided and that it contains an initialized Elasticsearch client.
+    It currently performs only this validation step and returns ``True``
+    if the connection is valid.
 
-    Args:
-        db: Database wrapper that provides access to an Elasticsearch client
-            via `db.es`. If `None` or missing a valid client, a ValueError
-            is raised.
+    Parameters
+    ----------
+    db : object, optional
+        Database connection object expected to expose an ``es`` attribute
+        representing the Elasticsearch client.
 
-    Returns:
-        bool: 
-            Always returns True once index names are successfully generated.
+    Returns
+    -------
+    bool
+        ``True`` if the database connection is valid.
 
-    Raises:
-        ValueError: If `db` is None or does not contain a valid `es` client.
+    Raises
+    ------
+    ValueError
+        If the database object is ``None`` or the Elasticsearch client
+        is not initialized.
 
-    Notes:
-        - This function was previously designed to return both index names
-          (`urls_index`, `content_index`) but now performs only validation
-          and index name generation.
-        - The actual index creation may occur elsewhere in the initialization
-          pipeline.
-    """        
-    if db is None or db.es is None:  # <- changed from db.con
+    Notes
+    -----
+    - This function acts as a placeholder for future index creation logic.
+    - Intended to ensure the connection is available before performing
+      index management operations.
+    """    
+    if db is None or db.es is None: 
         raise ValueError("db connection is required")
-    urls_index = get_index_name(LINKS_INDEX)
-    content_index = get_index_name(CONTENT_INDEX)
     return True
-    #return urls_index, content_index
 
-def get_urls_by_random_timestamp_and_prefix(db, size=RANDOM_SITES_QUEUE, max_attempts=20):
+def get_urls_by_random_timestamp_and_prefix(db, size=RANDOM_SITES_QUEUE, max_attempts=20): #pylint: disable=too-many-locals
     """
     Efficiently sample up to `size` random URLs (one per host) from Elasticsearch.
 
@@ -5221,4 +5219,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
