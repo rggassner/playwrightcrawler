@@ -1,4 +1,10 @@
 #!venv/bin/python3
+# pylint: disable=wrong-import-order,wrong-import-position,wildcard-import
+import absl.logging
+from playwright.async_api import async_playwright, Error as PlaywrightError
+from PIL import Image, UnidentifiedImageError
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+from config import *
 import warnings
 warnings.filterwarnings(
     "ignore",
@@ -23,26 +29,15 @@ import chardet
 import numpy as np
 import psutil
 import dateutil.parser
-from fake_useragent import UserAgent
+from fake_useragent import UserAgent 
 from urllib3.exceptions import InsecureRequestWarning
-import urllib3
-from urllib3.exceptions import InsecureRequestWarning
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-from bs4 import MarkupResemblesLocatorWarning
-from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+import urllib3 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) 
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 warnings.filterwarnings("ignore", message=".*verify_certs=False is insecure.*")
-
-from elasticsearch import Elasticsearch, helpers
-from elasticsearch.exceptions import RequestError
-from PIL import Image, UnidentifiedImageError
-from playwright.async_api import async_playwright, Error as PlaywrightError
-import absl.logging
-from config import *
-
-
-
+from elasticsearch.exceptions import RequestError 
+from elasticsearch import Elasticsearch, helpers 
 
 absl.logging.set_verbosity('error')
 
@@ -5219,3 +5214,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
