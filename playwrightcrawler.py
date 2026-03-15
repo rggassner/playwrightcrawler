@@ -1,5 +1,116 @@
 #!venv/bin/python3
 # pylint: disable=wrong-import-order,wrong-import-position,wildcard-import
+"""
+Asynchronous web crawler with Elasticsearch persistence, content-type routing,
+and optional file downloading, NSFW classification, and open-directory detection.
+
+Overview
+--------
+This script implements a multi-purpose web crawler designed to discover, fetch,
+classify, and store web content at scale. It uses Playwright for dynamic
+JavaScript-rendered page crawling, httpx for lightweight HTTP fallback requests,
+BeautifulSoup for HTML parsing, and Elasticsearch as its primary storage backend
+with time-partitioned monthly indices.
+
+Architecture
+------------
+The crawler is built around two extensible decorator-based dispatch systems:
+
+- ``@function_for_url(regexp_list)``: Registers handlers for discovered URLs
+  based on their format (relative paths, absolute URLs, mailto links, etc.).
+- ``@function_for_content_type(regexp_list)``: Registers async handlers for
+  fetched resources based on their MIME type (HTML, images, PDFs, audio, video,
+  fonts, archives, databases, torrents, comics, MIDI, and plain text).
+
+New content-type handlers can be added by decorating an async function with
+``@function_for_content_type`` and a corresponding regex list. The ``EXTENSION_MAP``
+dictionary and the ``needs_download`` logic inside ``fast_extension_crawler`` must
+also be updated when new types are introduced.
+
+Main Components
+---------------
+DatabaseConnection
+    Thin wrapper around the Elasticsearch Python client. Manages connection
+    lifecycle, provides proxy methods for search and scroll operations, and
+    persists crawled content and discovered links using streaming bulk inserts
+    into time-partitioned monthly indices.
+
+get_page / get_page_async
+    Core crawling entry point. Launches a headless Chromium browser via Playwright,
+    intercepts all HTTP responses, extracts links and text, detects open directories,
+    and dispatches each resource to its registered content-type handler. A concurrent
+    memory monitor (``monitor_memory``) cancels the crawl if system or process memory
+    exceeds configured thresholds.
+
+fast_extension_crawler / run_fast_extension_pass
+    Lightweight crawling pass targeting URLs with known file extensions. Uses HEAD
+    requests to validate content types before downloading, collapsing multiple URLs
+    from the same host to one representative to maximize domain coverage.
+
+preprocess_crawler_data
+    Normalizes and enriches raw crawler output before persistence. Applies URL
+    sanitization, host/URL allow- and block-list enforcement, repeated-path-segment
+    detection, directory-level extraction, query-parameter decomposition, and
+    open-directory tree expansion.
+
+cleanup_elasticsearch_indexes / deduplicate_links_vs_content_es
+    Maintenance utilities for keeping indices clean. Support removal of documents
+    with repeated URL segments, blocked hosts or URLs, missing content types, or
+    malformed URLs. Deduplication deletes link-index entries that have already been
+    fully crawled and stored in the content index.
+
+Domain Selection Strategies
+---------------------------
+Three weighted strategies are used to select crawl targets from Elasticsearch:
+
+- ``oldest``       — Prefer hosts with the oldest last-visited timestamps.
+- ``random``       — Select randomly across a sampled time pivot.
+- ``host_prefix``  — Pick hosts by a random alphabetical prefix grouping.
+
+Weights are configured via ``METHOD_WEIGHTS`` in ``config.py``.
+
+Content Classification
+----------------------
+When ``CATEGORIZE_NSFW`` is enabled, images are fed through an OpenNSFW2 model
+(``opennsfw2``) and routed to separate SFW or NSFW output folders based on a
+configurable probability threshold. All image processing uses Pillow with
+automatic mode normalization (CMYK → RGB, palette + transparency → RGBA).
+
+Open Directory Detection
+------------------------
+The ``is_open_directory`` function scans fetched HTML for patterns characteristic
+of auto-generated file listings (Apache, Nginx, IIS, Lighttpd, h5ai, DUFS,
+Directory Lister, AList, AutoIndex, pCloud, and others). Detected open directories
+optionally trigger recursive path expansion via ``get_directory_tree``.
+
+Instance Coordination
+---------------------
+Multiple crawler processes running on the same host are assigned unique instance
+numbers (1–99) via file-based ``fcntl`` locking under ``/tmp/instance_flags/``.
+Instance 1 handles cleanup, input-file processing, and general crawling.
+Instance 2 handles deduplication and the fast extension pass. All other instances
+run as general-purpose crawlers.
+
+Configuration
+-------------
+All tuneable parameters (Elasticsearch connection details, index names, download
+flags, memory limits, word extraction settings, allow/block lists, scroll behavior,
+concurrency limits, NSFW thresholds, and method weights) are imported from
+``config.py`` via a wildcard import.
+
+Entry Point
+-----------
+Run directly::
+
+    python3 crawler.py                  # normal crawling mode
+    python3 crawler.py --initial        # seed crawl from INITIAL_URL
+    python3 crawler.py --initial URL    # seed crawl from a custom URL
+
+Dependencies
+------------
+playwright, httpx, beautifulsoup4, elasticsearch, Pillow, numpy, psutil,
+chardet, fake-useragent, python-dateutil, urllib3, absl-py, opennsfw2 (optional)
+"""
 import absl.logging
 from playwright.async_api import async_playwright, Error as PlaywrightError
 from PIL import Image, UnidentifiedImageError
@@ -5214,4 +5325,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
