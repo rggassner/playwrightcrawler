@@ -1,5 +1,5 @@
 #!venv/bin/python3
-# pylint: disable=wrong-import-order,wrong-import-position,wildcard-import
+# pylint: disable=wrong-import-order,wrong-import-position,wildcard-import,too-many-locals,too-many-lines
 """
 Asynchronous web crawler with Elasticsearch persistence, content-type routing,
 and optional file downloading, NSFW classification, and open-directory detection.
@@ -1116,7 +1116,7 @@ def db_create_monthly_indexes(db=None):
         raise ValueError("db connection is required")
     return True
 
-def get_urls_by_random_timestamp_and_prefix(db, size=RANDOM_SITES_QUEUE, max_attempts=20): #pylint: disable=too-many-locals
+def get_urls_by_random_timestamp_and_prefix(db, size=RANDOM_SITES_QUEUE, max_attempts=20):
     """
     Efficiently sample up to `size` random URLs (one per host) from Elasticsearch.
 
@@ -1261,7 +1261,7 @@ def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) 
                 return True
     return False
 
-def get_random_host_domains(db, size=RANDOM_SITES_QUEUE): #pylint: disable=too-many-locals
+def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
     """
     Efficiently retrieve a random sample of URLs, one per host, using Elasticsearch search_after pagination.
 
@@ -1761,7 +1761,7 @@ def is_embedded_url(url: str) -> bool:
     return url.startswith(("data:", "blob:", "about:", "javascript:"))
 
 
-# pylint: disable= too-many-locals,too-many-statements,too-many-branches
+# pylint: disable= too-many-statements,too-many-branches
 def preprocess_crawler_data(data: dict) -> dict:
     """
     Normalize, enrich, and filter crawler output before persistence.
@@ -2206,7 +2206,7 @@ def get_words_from_soup(soup) -> list[str]:
     return extract_top_words_from_text(combined_text)
 
 
-# pylint: disable= too-many-locals,too-many-statements, dangerous-default-value
+# pylint: disable= too-many-statements, dangerous-default-value
 def sanitize_url(
         url,
         skip_log_tags=['FINAL_NORMALIZE',
@@ -2711,7 +2711,7 @@ async def content_type_plain_text(args):
         "parent_host": args['parent_host'] }
     }
 
-# pylint: disable= too-many-locals, too-many-positional-arguments, too-many-arguments
+# pylint: disable= too-many-positional-arguments, too-many-arguments
 async def handle_content_type(
     args,
     download_flag,
@@ -3527,7 +3527,7 @@ async def process_input_url_files(db):
             print(f"File fully processed and removed: {file_to_process}")
 
 
-# pylint: disable=too-many-locals,too-many-statements,too-many-positional-arguments,too-many-arguments
+# pylint: disable=too-many-statements,too-many-positional-arguments,too-many-arguments
 def cleanup_elasticsearch_indexes( 
     db,
     remove_repeated_segments=False,
@@ -3592,7 +3592,7 @@ def cleanup_elasticsearch_indexes(
         "invalid_urls": 0,
     }
 
-    # pylint: disable=too-many-branches,too-many-locals
+    # pylint: disable=too-many-branches
     def process_index(index_pattern: str, label: str):
         nonlocal cleanup_stats
         deleted = 0
@@ -4435,7 +4435,6 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
         print(f"Unhandled error in get_random_unvisited_domains: {e}")
         return []
 
-# pylint: disable=too-many-locals
 def deduplicate_links_vs_content_es(
     db,
     links_index_pattern=f"{LINKS_INDEX}-*",
@@ -4527,7 +4526,7 @@ def deduplicate_links_vs_content_es(
     print(f"Deduplication complete. Total deleted: {deleted_total:,} docs.")
     return deleted_total
 
-# pylint: disable=too-many-statements,too-many-branches,too-many-locals
+# pylint: disable=too-many-statements,too-many-branches
 async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
     """
     Perform a fast, targeted crawling pass for URLs ending in specific file extensions.
@@ -4701,7 +4700,7 @@ async def run_fast_extension_pass(db, max_workers=MAX_FAST_WORKERS):
 
     print("Fast extension crawling pass complete.")
 
-# pylint: disable=too-many-branches,too-many-locals,too-many-return-statements
+# pylint: disable=too-many-branches,too-many-return-statements
 async def fast_extension_crawler(url, extension_map, db, playwright):
     """
     Quickly determines how to handle a given URL based on its Content-Type header,
@@ -4856,7 +4855,7 @@ def is_html_content(content_type: str) -> bool:
     )
 
 
-async def get_page_async(url: str, playwright): # pylint: disable=too-many-statements,too-many-locals
+async def get_page_async(url: str, playwright): # pylint: disable=too-many-statements
     """
     Asynchronously crawls a web page using Playwright, extracts content, and processes linked resources.
 
@@ -4910,7 +4909,7 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
         - Playwright’s `ignore_https_errors=True` is used to bypass invalid certificates.
         - The crawler is designed to support modular extension via `content_type_functions`, which map
           regex patterns of content types to custom async handlers.
-    """    
+    """
     user_agent = ua.random
     parent_host = urlsplit(url)[1]
     page_data = {"crawledcontent": {}, "crawledlinks": set()}
@@ -4942,15 +4941,17 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
 
         Args:
             page (playwright.async_api.Page): The Playwright page instance to navigate.
-            scroll (bool, optional): Whether to auto-scroll the page to trigger lazy content. Defaults to False.
+            scroll (bool, optional): Whether to auto-scroll
+            the page to trigger lazy content. Defaults to False.
 
         Returns:
             str | None: The sanitized content type of the loaded page, or None if loading failed.
 
         Notes:
             - If the response is missing or invalid, the function logs a warning and returns None.
-            - The 3-second delay helps capture JS-rendered elements that appear slightly after `networkidle`.
-        """        
+            - The 3-second delay helps capture JS-rendered
+              elements that appear slightly after `networkidle`.
+        """
         try:
             response = await page.goto(url, wait_until="domcontentloaded")
             if not response:
@@ -5084,8 +5085,8 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
     if not content_type:
         content_type = await httpx_fallback()
 
-    #html_text, links, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
-    _, _, words, raw_webcontent, min_webcontent, isopendir, pat = await extract_page_data(page, content_type)
+    xr = await extract_page_data(page, content_type)
+    _, _, words, raw_webcontent, min_webcontent, isopendir, pat = xr
 
     def handler(response):
         asyncio.create_task(handle_response(response))
@@ -5135,7 +5136,8 @@ async def monitor_memory(pid, url, stop_event):
         system_mem = psutil.virtual_memory().percent  # total system memory usage in %
         process_mem = process.memory_info().rss / (1024 * 1024)  # MB
         if system_mem > MAX_MEMORY_PERCENT and process_mem > ATTENTION_MEMORY_MB:
-            print(f"\033[91m[WARN] System memory {system_mem:.1f}% and process_mem {process_mem} — aborting {url}\033[0m")
+            print(f"\033[91m[WARN] System memory {system_mem:.1f}% and"
+                  f" process_mem {process_mem} — aborting {url}\033[0m")
             stop_event.set()
             return
         # Optional: Also kill if *this* process uses too much memory
@@ -5178,7 +5180,7 @@ async def get_page(url, playwright, db):
           `monitor_memory()`, and cancels the crawl if the limit is hit.
         - This design helps maintain crawler stability when handling large or 
           unexpectedly heavy pages.
-    """    
+    """
     global results # pylint: disable=global-statement
     pid = psutil.Process().pid
     stop_event = asyncio.Event()
@@ -5216,7 +5218,7 @@ async def get_page(url, playwright, db):
                 "visited": True,
                 "source": 'get_page_outofmemory',
             }
-        })        
+        })
         presults = preprocess_crawler_data(results)
         db.save_batch(presults)
         results = {"crawledcontent": {}, "crawledlinks": set()}
@@ -5306,19 +5308,25 @@ async def main():
                     remove_blocked_urls=REMOVE_BLOCKED_URLS,
                     remove_invalid_urls=REMOVE_INVALID_URLS
                 )
-                print(f"Instance {instance}, iteration {iteration}: Checking for input URL files...")
+                print(f"Instance {instance}, iteration {iteration}:"
+                      f" Checking for input URL files...")
                 await process_input_url_files(db)
-                print(f"Instance {instance}, iteration {iteration}: Let's go full crawler mode.")
+                print(f"Instance {instance}, iteration {iteration}:"
+                      f" Let's go full crawler mode.")
                 await crawler(db)
             elif instance == 2:
-                print(f"Instance {instance}, iteration {iteration}: Running housekeeping, deduplication of links from indexes.")
+                print(f"Instance {instance}, iteration {iteration}:"
+                      f" Running housekeeping, deduplication of links from indexes.")
                 deduplicate_links_vs_content_es(db)
-                print(f"Instance {instance}, iteration {iteration}: Running fast extension pass.")
+                print(f"Instance {instance}, iteration {iteration}:"
+                      f" Running fast extension pass.")
                 await run_fast_extension_pass(db)
-                print(f"Instance {instance}, iteration {iteration}: Running crawler.")
+                print(f"Instance {instance}, iteration {iteration}:"
+                      f" Running crawler.")
                 await crawler(db)
             else:
-                print(f"Instance {instance}, iteration {iteration}: Running full crawler.")
+                print(f"Instance {instance}, iteration {iteration}:"
+                      f" Running full crawler.")
                 await crawler(db)
         db.close()
 
