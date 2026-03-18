@@ -4746,7 +4746,7 @@ async def fast_extension_crawler(url, extension_map, db, playwright):
             print(f"[fast_extension_crawler fallback] {e}")
         return await fallback()
 
-    if not (200 <= head_resp.status_code < 300):
+    if not 200 <= head_resp.status_code < 300:
         return await fallback()
 
     content_type = head_resp.headers.get("Content-Type", "")
@@ -4757,7 +4757,8 @@ async def fast_extension_crawler(url, extension_map, db, playwright):
 
     # --- Match against regexes for this extension only ---
     if not any(re.match(p, content_type) for p in expected_patterns):
-        print(f"\033[92m[FAST CRAWLER] Mismatch content type for {url}, got: -{content_type}-\033[0m")
+        print(f"\033[92m[FAST CRAWLER] Mismatch content type for"
+              f" {url}, got: -{content_type}-\033[0m")
         return await fallback()
 
     # --- Host validation ---
@@ -4848,7 +4849,7 @@ def is_html_content(content_type: str) -> bool:
     Returns:
         bool: True if the content type matches any HTML-related pattern, 
               False otherwise.
-    """    
+    """
     return any(
         re.match(pattern, content_type, re.IGNORECASE)
         for pattern in content_type_html_regex
@@ -4857,21 +4858,28 @@ def is_html_content(content_type: str) -> bool:
 
 async def get_page_async(url: str, playwright): # pylint: disable=too-many-statements
     """
-    Asynchronously crawls a web page using Playwright, extracts content, and processes linked resources.
+    Asynchronously crawls a web page using Playwright,
+    extracts content, and processes linked resources.
 
-    This function performs a full asynchronous crawl of a given URL with multiple fallback and parsing stages.
-    It leverages Playwright for dynamic content rendering and integrates auxiliary async functions for
+    This function performs a full asynchronous crawl of
+    a given URL with multiple fallback and parsing stages.
+    It leverages Playwright for dynamic content rendering
+    and integrates auxiliary async functions for
     content-type analysis, word and link extraction, and open directory detection.
 
     Workflow overview:
         1. **Browser setup** — Launches a headless Chromium instance with a random user agent.
-        2. **Page load (crawl)** — Attempts to load the target URL (first without scrolling, then with scrolling)
+        2. **Page load (crawl)** — Attempts to load the
+           target URL (first without scrolling, then with scrolling)
            and determines the normalized `Content-Type`.
-        3. **HTTPX fallback** — If Playwright fails to detect the content type, performs a lightweight
+        3. **HTTPX fallback** — If Playwright fails to
+           detect the content type, performs a lightweight
            async HTTP request using `httpx` as a backup.
-        4. **Response handling** — Asynchronously intercepts and processes all responses using a `response` listener,
+        4. **Response handling** — Asynchronously intercepts and
+           processes all responses using a `response` listener,
            invoking type-specific functions from `content_type_functions` when applicable.
-        5. **Content extraction** — Optionally extracts HTML text, hyperlinks, keywords, minimal and raw
+        5. **Content extraction** — Optionally extracts HTML
+           text, hyperlinks, keywords, minimal and raw
            web content, and detects open directory listings.
         6. **Cleanup** — Closes all Playwright contexts and removes listeners safely.
 
@@ -4884,30 +4892,38 @@ async def get_page_async(url: str, playwright): # pylint: disable=too-many-state
         playwright: An active Playwright instance used to launch Chromium.
 
     Returns:
-        None: This function does not return a value directly. Instead, it updates the global `results`
+        None: This function does not return a value directly.
+              Instead, it updates the global `results`
         dictionary with two main components:
             - `results["crawledcontent"][url]`: A structured object including:
                 - `"url"`: The crawled URL.
                 - `"content_type"`: The normalized content type string.
-                - `"isopendir"` / `"opendir_pattern"`: Flags and regex patterns if an open directory is detected.
+                - `"isopendir"` / `"opendir_pattern"`:
+                   Flags and regex patterns if an open directory is detected.
                 - `"words"`: Extracted text tokens (if `EXTRACT_WORDS` is enabled).
-                - `"raw_webcontent"` / `"min_webcontent"`: Extracted raw and minimized HTML segments.
+                - `"raw_webcontent"` / `"min_webcontent"`: 
+                   Extracted raw and minimized HTML segments.
                 - `"visited"`: Boolean indicating the URL was successfully processed.
                 - `"parent_host"`: The host domain of the original URL.
                 - `"source"`: Always `'get_page_async'`.
             - `results["crawledlinks"]`: A set of newly discovered URLs found in the HTML.
 
     Raises:
-        Exception: All internal exceptions are caught and logged, ensuring that a single failure does not
-        interrupt the crawl process. The function prints contextual error messages instead of raising errors.
+        Exception: All internal exceptions are caught and
+        logged, ensuring that a single failure does not
+        interrupt the crawl process. The function prints 
+        contextual error messages instead of raising errors.
 
     Notes:
-        - The function employs several internal helpers (`setup_browser`, `crawl`, `handle_response`, etc.)
+        - The function employs several internal helpers
+          (`setup_browser`, `crawl`, `handle_response`, etc.)
           that encapsulate specific stages of the crawl pipeline.
         - Scroll-based loading is automatically retried if the initial page load lacks content type.
-        - To avoid blocking, response handling is scheduled via `asyncio.create_task()` for each intercepted response.
+        - To avoid blocking, response handling is scheduled via 
+          `asyncio.create_task()` for each intercepted response.
         - Playwright’s `ignore_https_errors=True` is used to bypass invalid certificates.
-        - The crawler is designed to support modular extension via `content_type_functions`, which map
+        - The crawler is designed to support modular
+          extension via `content_type_functions`, which map
           regex patterns of content types to custom async handlers.
     """
     user_agent = ua.random
