@@ -4011,7 +4011,7 @@ def is_host_allow_listed(url):
         - Matching is case-insensitive and Unicode-aware (`re.I | re.U`).
         - Use this to define exceptions to block-list filters or to give
           priority crawling access to certain trusted domains.
-    """    
+    """
     for regex in HOST_REGEX_ALLOW_LIST:
         if re.search(regex, url, flags=re.I | re.U):
             return True
@@ -4037,7 +4037,7 @@ def is_host_block_listed(url):
         - Matching is case-insensitive and Unicode-aware (`re.I | re.U`).
         - Intended for use in cleanup or filtering phases to skip
           undesired or known problematic hosts.
-    """    
+    """
     for regex in HOST_REGEX_BLOCK_LIST:
         if re.search(regex, url, flags=re.I | re.U):
             return True
@@ -4067,7 +4067,7 @@ def sanitize_content_type(content_type):
         - Strips quotes and trims whitespace.
         - Removes optional parameters such as charset or boundary definitions.
         - Intended for use in crawlers, downloaders, and content-type filtering logic.
-    """    
+    """
     content_type = content_type.strip()
     content_type = re.sub(r'^"(.*)"$', r"\1", content_type)  # remove surrounding quotes
     content_type = re.sub(r'^content-type:\s*', '', content_type, flags=re.I)  # remove prefix
@@ -4114,7 +4114,7 @@ async def get_min_webcontent_page(page) -> str:
         - Broad exceptions are intentionally caught to ensure robustness during 
           large-scale crawling or scraping operations.
 
-    """    
+    """
     try:
         # Try waiting a little, but don't block forever
         try:
@@ -4183,7 +4183,7 @@ def is_open_directory(content, content_url):
         - The function can detect a variety of directory listing frameworks, 
           including Apache, Lighttpd, IIS, h5ai, DUFS, and pCloud, among others.
         - If no known pattern matches, the function safely returns `(False, "")`.
-    """    
+    """
     host = urlsplit(content_url)[1]
     hostnp = host.split(':')[0]
 
@@ -4276,7 +4276,7 @@ def extract_top_words_from_text(text: str) -> list[str]:
     Returns:
         list[str]: A list of the most common words that satisfy the configured filters,
         ordered by descending frequency.
-    """   
+    """
     if WORDS_REMOVE_SPECIAL_CHARS:
         text = re.sub(r'[^\w\s]', ' ', text, flags=re.UNICODE)
     if WORDS_TO_LOWER:
@@ -4309,9 +4309,10 @@ def get_instance_number():
              Returns `999` if no available lock could be acquired or if an error occurs.
 
     Notes:
-        - Uses `fcntl.flock()` for interprocess locking, which is only available on Unix-like systems.
+        - Uses `fcntl.flock()` for interprocess locking,
+        which is only available on Unix-like systems.
         - The global variable `lock_file` must remain open to keep the lock active.
-    """    
+    """
     global lock_file # pylint: disable=global-variable-undefined
     try:
         os.makedirs("/tmp/instance_flags", exist_ok=True)
@@ -4390,7 +4391,7 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
         Catches and logs both `RequestError` (from Elasticsearch) and generic exceptions,
         returning an empty list in both cases.
 
-    """    
+    """
     # Default weights if none provided
     if METHOD_WEIGHTS is None:
         method_weights = {
