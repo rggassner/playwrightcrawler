@@ -3467,12 +3467,12 @@ async def process_input_url_files(db):
         None
             The function operates for its side effects: crawling URLs and
             updating or deleting input files.
-    """    
+    """
     if not os.path.isdir(INPUT_FOLDER):
         return
 
     while True:
-        files = [f for f in os.listdir(INPUT_FOLDER) if os.path.isfile(os.path.join(INPUT_FOLDER, f))]
+        files = [f.name for f in os.scandir(INPUT_FOLDER) if f.is_file()]
         if not files:
             print("No more input files to process.")
             break
@@ -3528,7 +3528,7 @@ async def process_input_url_files(db):
 
 
 # pylint: disable=too-many-statements,too-many-positional-arguments,too-many-arguments
-def cleanup_elasticsearch_indexes( 
+def cleanup_elasticsearch_indexes(
     db,
     remove_repeated_segments=False,
     remove_empty_ctype=False,
@@ -3727,7 +3727,7 @@ def get_min_webcontent(soup) -> str:
         - Whitespace, newlines, and empty text nodes are removed.
         - Useful for quick similarity checks or storing minimal textual content
           without full HTML noise.
-    """    
+    """
     text_parts = [
         t.strip()  # remove leading/trailing whitespace including \n
         for t in soup.find_all(string=True)
@@ -3814,7 +3814,7 @@ async def content_type_images(args):
         - CMYK and palette-based images are converted for consistent handling.
         - Raw content is never written directly; only normalized PNG output
           is saved.
-    """    
+    """
     npixels = 0
     if CATEGORIZE_NSFW or DOWNLOAD_ALL_IMAGES:
         try:
@@ -3844,7 +3844,7 @@ async def content_type_images(args):
                     if DOWNLOAD_SFW:
                         img.save(SFW_FOLDER + '/' + filename, "PNG")
                 return  { args['url']:
-                        {   
+                        {
                             "url":args['url'],
                             "content_type":args['content_type'],
                             "source":"content_type_images_nsfw_categorization",
@@ -3856,7 +3856,7 @@ async def content_type_images(args):
                             "resolution":npixels }
                         }
             return  { args['url']:
-                    {   
+                    {
                         "url":args['url'],
                         "content_type":args['content_type'],
                         "source":"content_type_images_download",
@@ -3945,7 +3945,7 @@ def get_directory_tree(url):
         - The host portion (scheme + domain) is preserved at every level.
         - Intended for use in hierarchical crawling, S3-style path exploration,
           or building breadcrumb-like fallback checks.
-    """    
+    """
     try:
         host = "://".join(urlsplit(url)[:2])
         dtree = []
@@ -3984,7 +3984,7 @@ def is_url_block_listed(url):
         - Intended for filtering out undesired or dangerous paths such as
           admin URLs, tracking URLs, infinite loops, or known problematic
           structures.
-    """    
+    """
     for regex in URL_REGEX_BLOCK_LIST:
         if re.search(regex, url, flags=re.I | re.U):
             return True
