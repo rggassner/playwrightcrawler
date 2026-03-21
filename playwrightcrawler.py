@@ -2700,7 +2700,7 @@ async def content_type_plain_text(args):
     words = ''
     if EXTRACT_WORDS:
         words = get_words(args['content'])
-    return { args['url'] : 
+    return { args['url'] :
             {
         "url": args['url'],
         "content_type": args['content_type'],
@@ -2769,7 +2769,8 @@ async def handle_content_type(
             if not is_octetstream(content_type):
                 print(
                     f"\033[94m[SKIP {type_label.upper()}] "
-                    f"Extension '{ext}' not mapped to {type_label} regex ({content_type}). URL={url}\033[0m"
+                    f"Extension '{ext}' not mapped to {type_label}"
+                    f" regex ({content_type}). URL={url}\033[0m"
                 )
             return {}
 
@@ -2902,7 +2903,7 @@ async def content_type_videos(args):
     - This function is asynchronous because downloading and I/O inside
       ``handle_content_type`` require awaiting.
 
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_VIDEOS,
@@ -2948,7 +2949,7 @@ async def content_type_audios(args):
         * Creating a structured metadata entry.
     - This function is asynchronous because audio downloading and I/O operations
       inside ``handle_content_type`` may require awaiting.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_AUDIOS,
@@ -2995,7 +2996,7 @@ async def content_type_pdfs(args):
         * Returning a metadata dictionary describing the PDF resource.
     - This function is asynchronous because file downloads and I/O operations
       may be awaited within ``handle_content_type``.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_PDFS,
@@ -3044,7 +3045,7 @@ async def content_type_docs(args):
     - Files are stored inside the ``DOCS_FOLDER`` directory.
     - This function serves as a lightweight wrapper to keep all content-type
       handlers simple, declarative, and easy to maintain.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_DOCS,
@@ -3094,7 +3095,7 @@ async def content_type_databases(args):
     - Stored files are written into ``DATABASES_FOLDER``.
     - This wrapper exists mainly to keep handler definitions clean,
       declarative, and uniform across MIME types.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_DATABASES,
@@ -3144,7 +3145,7 @@ async def content_type_torrents(args):
     - Saved files are stored under ``TORRENTS_FOLDER``.
     - This function exists primarily as a lightweight wrapper to keep MIME-type
       handlers uniform and maintainable.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_TORRENTS,
@@ -3196,7 +3197,7 @@ async def content_type_comics(args):
       flag.
     - This wrapper exists to keep MIME-type-specific handlers organized and
       consistent across the crawler codebase.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_COMICS,
@@ -3247,7 +3248,7 @@ async def content_type_compresseds(args):
       flag.
     - This function is a thin wrapper to maintain clean MIME-type-specific
       organization for all crawler content handlers.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_COMPRESSEDS,
@@ -3299,7 +3300,7 @@ async def content_type_midis(args):
       flag.
     - This function exists primarily as a thin wrapper to keep MIME-specific
       logic clean, isolated, and consistent across all content handlers.
-    """    
+    """
     return await handle_content_type(
         args,
         DOWNLOAD_MIDIS,
@@ -3335,7 +3336,7 @@ def is_octetstream(content_type: str) -> bool:
     Octet-stream content types often represent arbitrary binary data and
     typically indicate that the crawler should treat the resource as a file
     rather than HTML or other structured formats.
-    """    
+    """
     for octet_pattern in content_type_octetstream:
         if re.match(octet_pattern, content_type, re.IGNORECASE):
             return True
@@ -3383,7 +3384,7 @@ async def content_type_download(args):
     - The returned structure is designed to be directly saved into Elasticsearch.
     - HTML output is truncated to ``MAX_WEBCONTENT_SIZE`` to reduce index size.
     - Errors are caught broadly to ensure crawler stability.
-    """    
+    """
     try:
         content = args['content']
         soup = BeautifulSoup(content, "html.parser")
@@ -3400,7 +3401,7 @@ async def content_type_download(args):
             "source": 'content_type_html_regex_soup_exception',
             "parent_host": args['parent_host'] }
         }
-        
+
     words = ''
     min_webcontent = ''
     raw_webcontent = ''
@@ -3411,7 +3412,7 @@ async def content_type_download(args):
     if EXTRACT_MIN_WEBCONTENT:
         min_webcontent = get_min_webcontent(soup)[:MAX_WEBCONTENT_SIZE]
     isopendir, pat  = is_open_directory(str(soup), args['url'])
-    return { args['url'] : 
+    return { args['url'] :
             {
         "url": args['url'],
         "content_type": args['content_type'],
