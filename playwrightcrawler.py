@@ -2151,7 +2151,10 @@ def email_url(args):
     - Email validation is conservative to avoid indexing malformed addresses.
     """    
     address_search = re.search(
-        r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|mailo:|mail to:|Email para:|email :|email:|E-mail: |mail-to:|maitlo:|mail.to:)(.*)",
+        r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|"
+        r"emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|"
+        r"mailo:|mail to:|Email para:|email :|email:|E-mail: |mail-to:|"
+        r"maitlo:|mail.to:)(.*)",
         args['url'],
         flags=re.I | re.U,
     )
@@ -2197,7 +2200,7 @@ def get_words_from_soup(soup) -> list[str]:
     - Tag filtering is based on the parent tag name of each text node.
     - The actual word selection, normalization, and ranking logic is delegated
       to `extract_top_words_from_text`.
-    """    
+    """
     text_parts = [
         t for t in soup.find_all(string=True)
         if t.parent.name not in soup_tag_blocklist
@@ -2240,10 +2243,10 @@ def sanitize_url(
     Returns:
         str: A sanitized and normalized URL. If parsing or normalization
         fails at any point, a best-effort cleaned URL is returned.
-    """            
+    """
     if skip_log_tags is None:
         skip_log_tags = set()
-        
+
 
     def clean_hostname_with_userinfo(netloc, scheme):
         """
@@ -2421,7 +2424,7 @@ def function_for_content_type(regexp_list):
     - Regexes are compiled using case-insensitive (`re.I`) and unicode (`re.U`)
       flags.
     - A global list named `content_type_functions` must exist and be writable.
-    """    
+    """
     def get_content_type_function(f):
         for regexp in regexp_list:
             content_type_functions.append((re.compile(regexp, flags=re.I | re.U), f))
@@ -2472,7 +2475,7 @@ async def get_links_page(page, base_url: str) -> list[str]:
     - Output order is not guaranteed due to the internal use of ``set`` for
       deduplication.
     - Designed to be fast, tolerant, and safe for large-scale crawling.
-    """    
+    """
     links = set()
     async def safe_extract(selector: str, attr: str, tag_name: str):
         try:
@@ -2523,7 +2526,7 @@ def get_words(text: bytes | str) -> list[str]:
     - Designed to be used across multiple content-type handlers
       (HTML, text files, PDFs, etc.) to maintain consistency in word
       extraction.
-    """    
+    """
     if not text:
         return []
     if isinstance(text, bytes):
@@ -2569,7 +2572,7 @@ async def get_words_from_page(page) -> list[str]:
       in the DOM; this function focuses on structural filtering, not layout
       visibility.
 
-    """    
+    """
     # JS snippet that safely walks the DOM and collects text nodes
     js = """
     () => { 
@@ -2648,8 +2651,8 @@ async def content_type_ignore(args):
     - This is the final catch-all content-type handler.
     - No content inspection, HTML parsing, or file operations are performed.
     - Useful for logging, indexing, or debugging unknown or unsupported MIME types.
-    """    
-    return { args['url'] : 
+    """
+    return { args['url'] :
             {
         "url": args['url'],
         "content_type": args['content_type'],
@@ -2696,7 +2699,7 @@ async def content_type_plain_text(args):
     - Word extraction is controlled by the global ``EXTRACT_WORDS`` flag.
     - Parsing is intentionally minimal since plain text requires no HTML parsing
       or binary inspection.
-    """    
+    """
     words = ''
     if EXTRACT_WORDS:
         words = get_words(args['content'])
@@ -4220,7 +4223,13 @@ def is_open_directory(content, content_url):
         r'<h1>文件索引.*?</h1>',
         r'Directory listing for .*',
         r'<ListBucketResult\s+xmlns=[\'\"].*?[\'\"]>',
-        r'<tr\s+class=["\']indexhead["\']>\s*<th\s+class=["\']indexcolicon["\']>\s*<img\s+src=["\']/icons/blank\.gif["\']\s+alt=["\']\[ICO\]["\']\s*/?>\s*</th>\s*<th\s+class=["\']indexcolname["\']>\s*<a\s+href=["\']\?C=N;O=A["\']>\s*Name\s*</a>\s*</th>\s*<th\s+class=["\']indexcollastmod["\']>\s*<a\s+href=["\']\?C=M;O=A["\']>\s*Last\s+modified\s*</a>\s*</th>\s*<th\s+class=["\']indexcolsize["\']>\s*<a\s+href=["\']\?C=S;O=A["\']>\s*Size\s*</a>\s*</th>\s*</tr>',
+        r'<tr\s+class=["\']indexhead["\']>\s*<th\s+class=["\']indexcolicon'
+        r'["\']>\s*<img\s+src=["\']/icons/blank\.gif["\']\s+alt=["\']\[ICO\]'
+        r'["\']\s*/?>\s*</th>\s*<th\s+class=["\']indexcolname["\']>\s*<a\s+'
+        r'href=["\']\?C=N;O=A["\']>\s*Name\s*</a>\s*</th>\s*<th\s+class='
+        r'["\']indexcollastmod["\']>\s*<a\s+href=["\']\?C=M;O=A["\']>\s*La'
+        r'st\s+modified\s*</a>\s*</th>\s*<th\s+class=["\']indexcolsize["\']'
+        r'>\s*<a\s+href=["\']\?C=S;O=A["\']>\s*Size\s*</a>\s*</th>\s*</tr>',
         r'\.calibreRangeWrapper',
         r'<body\sstyle="font-size:medium">[a-z]*\sFolder\s*\t*<a\shref="/list\?dir=1">',
         r'<img\s+[^>]*alt="\[PARENTDIR\]"[^>]*>',
@@ -4240,12 +4249,14 @@ def is_open_directory(content, content_url):
         r'<a href="\?C=N&O=D">Name&nbsp; &#8679;<\/a>',
         r'<a href="\?C=M;O=A">Last modified</a>',
         r'<a href="\.\.\/\?C=N&amp;O=D">Parent directory\/<\/a>',
-        r'<td align="center" class="powered">Powered by <a href="https://www.pcloud.com/">pCloud</a></td>',
+        r'<td align="center" class="powered">Powered'
+        r' by <a href="https://www.pcloud.com/">pCloud</a></td>',
         r'<a href="\?C=N;O=D">Name</a>',
         r'<h2>Directory listing of /</h2>',
         r'<a href="\?srt=size"><b>Размер</b></a>',
         r'<title>Directory listing of http',
-        r'<input type="search" id="search" value="" class="form-control search" placeholder="Nom du fichier">',
+        r'<input type="search" id="search" value=""'
+        r' class="form-control search" placeholder="Nom du fichier">',
         r'<td><a href="\?dir=\.">Parent Directory<\/a>',
         r'<a href="https://github\.com/DirectoryLister/DirectoryLister"',
     ]
