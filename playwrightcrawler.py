@@ -1859,7 +1859,7 @@ def preprocess_crawler_data(data: dict) -> dict:
             continue  # skip if content URL has no host
         if(
                 not is_host_block_listed(host) 
-                and is_host_allow_listed(host) 
+                and is_host_allow_listed(host)
                 and not is_url_block_listed(url)
                 and not has_repeated_segments(url)
         ):
@@ -1959,7 +1959,7 @@ def get_directory_levels(url_path):
     - Empty path segments and leading/trailing slashes are ignored.
     - Padding ensures consistent field availability when storing structured
       data in document-oriented databases.
-    """    
+    """
     # Split the URL path into parts and remove empty strings
     levels = [p for p in url_path.strip("/").split("/") if p]
 
@@ -2006,7 +2006,7 @@ def function_for_url(regexp_list):
       flags.
     - A global list named `url_functions` must exist and be writable.
     - This pattern allows modular, extensible URL handling within the crawler.
-    """    
+    """
     def get_url_function(f):
         for regexp in regexp_list:
             url_functions.append((re.compile(regexp, flags=re.I | re.U), f))
@@ -2018,7 +2018,8 @@ def function_for_url(regexp_list):
     [
         r"^(\/|\.\.\/|\.\/)",
         r"^[0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬´c�í¦a]+$",
-        r"^[0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬´c]*[\?\/][0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬:\"¶c´™*]+$",
+        r"^[0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬´c]*[\?\/]"
+        r"[0-9\-\./\?=_\&\s%@<>\(\);\+!,\w\$\'–’—”“a°§£Ã¬:\"¶c´™*]+$",
     ]
 )
 def relative_url(args):
@@ -2054,7 +2055,7 @@ def relative_url(args):
       malformed relative links often found in real-world HTML.
     - Final URL normalization and de-duplication are expected to be handled
       by downstream components of the crawler.
-    """    
+    """
     out_url = urljoin(args['parent_url'], args['url'])
     parent_host = urlsplit(args['parent_url']).hostname
     return [{
@@ -2098,7 +2099,7 @@ def full_url(args):
       to be handled by later stages of the crawling pipeline.
     - FTP URLs are included for completeness and treated the same as HTTP(S)
       URLs at this stage.
-    """    
+    """
     parent_host = urlsplit(args['parent_url']).hostname
     return [{
         "url": args['url'],
@@ -2108,7 +2109,10 @@ def full_url(args):
         "host": urlsplit(args['url']).hostname,
     }]
 
-@function_for_url([r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|mailo:|mail to:|Email para:|email :|email:|E-mail: |mail-to:|maitlo:|mail.to:)"])
+@function_for_url([r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|"
+                   r"\"mailto:|emailto:|maltio:|mainto:|E\-mail:|mailtfo:|"
+                   r"mailtp:|mailtop:|mailo:|mail to:|Email para:|email :|"
+                   r"email:|E-mail: |mail-to:|maitlo:|mail.to:)"])
 def email_url(args):
     """
     Extract and normalize email addresses from mail-style URLs.
@@ -2149,7 +2153,7 @@ def email_url(args):
     - Multiple common misspellings and localized variants of email prefixes
       are intentionally supported.
     - Email validation is conservative to avoid indexing malformed addresses.
-    """    
+    """
     address_search = re.search(
         r"^(mailto:|maillto:|maito:|mail:|malito:|mailton:|\"mailto:|"
         r"emailto:|maltio:|mainto:|E\-mail:|mailtfo:|mailtp:|mailtop:|"
