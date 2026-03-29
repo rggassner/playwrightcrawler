@@ -1819,46 +1819,47 @@ def preprocess_crawler_data(data: dict) -> dict:
     if HUNT_OPEN_DIRECTORIES:
         for url, doc in crawledcontent.items():
             if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
-                continue  # skip embedded base64 images        
+                continue  # skip embedded base64 images
             crawledlinks.update(set(get_directory_tree(url)))
         for url in crawledlinks.copy():
             if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
-                continue  # skip embedded base64 images        
+                continue  # skip embedded base64 images
             crawledlinks.update(set(get_directory_tree(url)))
 
     for url in crawledlinks:
         if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
-            continue  # skip embedded base64 images        
+            continue  # skip embedded base64 images
         try:
             url = sanitize_url(url)
             parts = urlsplit(url)
             host = parts.hostname
             if not host:
-                continue  
-            
+                continue
+
             # Strip fragment (#whatever)
             normalized_url = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
             if(
-                    not is_host_block_listed(host) 
-                    and is_host_allow_listed(host) 
+                    not is_host_block_listed(host)
+                    and is_host_allow_listed(host)
                     and not is_url_block_listed(normalized_url)
                     and not has_repeated_segments(normalized_url)
             ):
                 if normalized_url not in crawledcontent:
-                    filtered_links[normalized_url] = host 
+                    filtered_links[normalized_url] = host
 
         except Exception as e: # pylint: disable=broad-exception-caught
-            print(f"[PREPROCESS_CRAWLER_DATA NORMALIZATION] Failed to normalize {url}: {e}. This url won't be persisted.")
-            continue    
+            print(f"[PREPROCESS_CRAWLER_DATA NORMALIZATION]"
+                  f" Failed to normalize {url}: {e}. This url won't be persisted.")
+            continue
 
     for url, doc in crawledcontent.items():
         if is_embedded_url(url) or len(url) > MAX_URL_LENGTH:
-            continue  # skip embedded base64 images        
+            continue  # skip embedded base64 images
         host = urlsplit(url).hostname
         if not host:
             continue  # skip if content URL has no host
         if(
-                not is_host_block_listed(host) 
+                not is_host_block_listed(host)
                 and is_host_allow_listed(host)
                 and not is_url_block_listed(url)
                 and not has_repeated_segments(url)
