@@ -1660,7 +1660,8 @@ class DatabaseConnection:
                 failed_count += 1
                 print("[BULK FAILED] Document:", item)
 
-        print(f"[BULK] Inserted {len(actions) - failed_count} docs successfully, {failed_count} failed")
+        print(f"[BULK] Inserted {len(actions) - failed_count}"
+              f" docs successfully, {failed_count} failed")
 
 
 
@@ -1681,8 +1682,23 @@ def create_directories():
     - Directory creation is idempotent via ``exist_ok=True``.
     - All directory paths are expected to be defined as global constants.
     - Intended to be called during application startup or initialization.
-    """    
-    dirs = [IMAGES_FOLDER, NSFW_FOLDER, SFW_FOLDER , FONTS_FOLDER, VIDEOS_FOLDER,  MIDIS_FOLDER , AUDIOS_FOLDER, PDFS_FOLDER ,DOCS_FOLDER , DATABASES_FOLDER, TORRENTS_FOLDER,COMPRESSEDS_FOLDER , COMICS_FOLDER, INPUT_FOLDER]
+    """
+    dirs = [
+            IMAGES_FOLDER,
+            NSFW_FOLDER,
+            SFW_FOLDER,
+            FONTS_FOLDER,
+            VIDEOS_FOLDER,
+            MIDIS_FOLDER,
+            AUDIOS_FOLDER,
+            PDFS_FOLDER,
+            DOCS_FOLDER,
+            DATABASES_FOLDER,
+            TORRENTS_FOLDER,
+            COMPRESSEDS_FOLDER,
+            COMICS_FOLDER,
+            INPUT_FOLDER
+            ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
 
@@ -1719,7 +1735,7 @@ def get_host_levels(hostname):
     - Port numbers are stripped before processing.
     - No public suffix normalization is performed (e.g., ``co.uk`` handling).
     - Field naming is designed for structured indexing and querying.
-    """    
+    """
     hostname = hostname.split(':')[0]  # Remove port if present
     parts = hostname.split('.')
     parts_reversed = list(parts)
@@ -1757,7 +1773,7 @@ def is_embedded_url(url: str) -> bool:
     -----
     - Embedded URLs often contain inline content or browser-generated objects.
     - Excluding these URLs helps avoid invalid requests and crawler noise.
-    """    
+    """
     return url.startswith(("data:", "blob:", "about:", "javascript:"))
 
 
@@ -1809,7 +1825,7 @@ def preprocess_crawler_data(data: dict) -> dict:
     - Query variables and values are extracted only when present.
     - All failures during URL normalization are caught and logged, preventing
       a single malformed URL from interrupting the pipeline.
-    """    
+    """
     crawledcontent = data.get("crawledcontent", {})
     crawledlinks = data.get("crawledlinks", set())
 
