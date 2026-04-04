@@ -140,15 +140,15 @@ import chardet
 import numpy as np
 import psutil
 import dateutil.parser
-from fake_useragent import UserAgent 
+from fake_useragent import UserAgent
 from urllib3.exceptions import InsecureRequestWarning
-import urllib3 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 warnings.filterwarnings("ignore", message=".*verify_certs=False is insecure.*")
-from elasticsearch.exceptions import RequestError 
-from elasticsearch import Elasticsearch, helpers 
+from elasticsearch.exceptions import RequestError
+from elasticsearch import Elasticsearch, helpers
 
 absl.logging.set_verbosity('error')
 
@@ -1111,8 +1111,8 @@ def db_create_monthly_indexes(db=None):
     - This function acts as a placeholder for future index creation logic.
     - Intended to ensure the connection is available before performing
       index management operations.
-    """    
-    if db is None or db.es is None: 
+    """
+    if db is None or db.es is None:
         raise ValueError("db connection is required")
     return True
 
@@ -1234,7 +1234,8 @@ def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) 
     Args:
         url (str): Full URL to analyze.
         max_pattern (int): Maximum length of the repeating directory pattern (default 5).
-        min_repeats (int): Minimum consecutive repetitions required to trigger detection (default 3).
+        min_repeats (int): Minimum consecutive repetitions
+        required to trigger detection (default 3).
 
     Returns:
         bool: True if a repeating path pattern occurs `min_repeats` or more times.
@@ -1263,7 +1264,8 @@ def has_repeated_segments(url: str, max_pattern: int = 5, min_repeats: int = 3) 
 
 def get_random_host_domains(db, size=RANDOM_SITES_QUEUE):
     """
-    Efficiently retrieve a random sample of URLs, one per host, using Elasticsearch search_after pagination.
+    Efficiently retrieve a random sample of URLs, one per
+    host, using Elasticsearch search_after pagination.
 
     This version avoids scanning the entire index by:
     1. Selecting a random timestamp as a pivot point.
@@ -1598,7 +1600,7 @@ class DatabaseConnection:
         - No additional logic or validation is performed.
         - Useful for mocking, instrumentation, or future extension without
           changing call sites.
-        """        
+        """
         return self.es.scroll(*args, **kwargs)
 
     def _get_index_name(self, base: str) -> str:
