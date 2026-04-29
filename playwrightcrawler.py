@@ -4411,6 +4411,19 @@ async def safe_content(page, retries: int = 5, delay: float = 1.0) -> str:
                 await asyncio.sleep(delay)
     return ""
 
+def filter_blocked_hosts(urls):
+    host_blocklist = [re.compile(p) for p in HOST_REGEX_BLOCK_LIST]
+
+    def is_blocked_host(host):
+        return any(r.search(host) for r in host_blocklist)    
+    filtered = []
+    for url in urls:
+        host = urlsplit(url).hostname or ""
+        if is_blocked_host(host):
+            continue
+        filtered.append(url)
+    return filtered
+
 def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
     """
     Selects a random set of unvisited domains from the database using weighted strategies.
@@ -4478,7 +4491,9 @@ def get_random_unvisited_domains(db, size=RANDOM_SITES_QUEUE):
         weights = list(normalized_weights.values())
         chosen_method = random.choices(methods, weights=weights, k=1)[0]
         print(f'Selected method: \033[32m{chosen_method}\033[0m')
-        return method_functions[chosen_method]()
+        #return method_functions[chosen_method]()
+        result = method_functions[chosen_method]()
+        return filter_blocked_hosts(result)    
 
     except RequestError as e:
         print("Elasticsearch request error:", e)
